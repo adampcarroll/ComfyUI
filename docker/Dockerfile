@@ -3,7 +3,7 @@
 # Pin your base image to a digest — get this by running:
 # docker pull nvidia/cuda:12.3.1-runtime-ubuntu22.04
 # docker inspect --format='{{index .RepoDigests 0}}' nvidia/cuda:12.3.1-runtime-ubuntu22.04
-FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04@sha256:REPLACE_WITH_REAL_DIGEST
+FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04@sha256:acb1709dcd8bd8500ab63c9a7aa3d7e5132bebd5ac519445b81969131b08a8a3
 
 # Build arg injected by GitHub Actions — the exact commit to build from
 ARG COMFYUI_COMMIT
@@ -16,20 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-# Clone your fork and checkout the exact commit
-RUN git clone https://github.com/adampcarroll/comfyui.git ComfyUI && \
-    cd ComfyUI && \
-    git checkout $COMFYUI_COMMIT
-
 WORKDIR /app/ComfyUI
 
-# Install dependencies with hash verification (see note below)
+# Copy code from Actions checkout instead of cloning
+COPY . .
+
+# Install dependencies with hash verification
 COPY docker/requirements.lock .
 RUN pip install --require-hashes -r requirements.lock
 
-# Non-root user — important for security
+# Non-root user
 RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
 USER comfyuser
 
