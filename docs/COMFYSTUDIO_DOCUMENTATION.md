@@ -1,6 +1,6 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — First real test build succeeded on `gb_testing`. Promotion to `gb_stable` has never been exercised. `New-ComfyProject.ps1` does not yet read from the registry manifest.
+> **Status:** In Progress — First real test build succeeded on `gb_testing`. `gb_stable` now has branch protection (require PR before merge) and all the pieces needed to promote (`PROMOTION_CHECKLIST.md`, `build-stable.yml`, `registry_manifest.json`) exist, but a real promotion has never been exercised. `New-ComfyProject.ps1` does not yet read from the registry manifest.
 > **Last Updated:** September 2, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
@@ -82,19 +82,23 @@ master (default branch)
 ├── .github/
 │   └── workflows/
 │       ├── build-testing.yml       # Auto-builds on push to gb_testing — EXISTS, fixed
-│       └── build-stable.yml        # Auto-builds on push to gb_stable — DOES NOT EXIST YET
+│       └── build-stable.yml        # Auto-builds on push to gb_stable — EXISTS
 ├── docker/
 │   ├── Dockerfile                  # Pinned base image, builds real Python 3.11 from source
 │   └── requirements.lock           # Hash-verified Python dependency lockfile
-├── registry_manifest.json          # APPROVED images only — DOES NOT EXIST YET
-└── PROMOTION_CHECKLIST.md          # DOES NOT EXIST YET (template is in Section 8 below)
+├── registry_manifest.json          # APPROVED images only — EXISTS, empty ({"images": []})
+└── PROMOTION_CHECKLIST.md          # EXISTS
 
 gb_testing
 ├── [ComfyUI source, merged forward from master as needed]
-└── registry_manifest.testing.json  # UNAPPROVED images — written by CI on every push here
+└── registry_manifest.testing.json  # UNAPPROVED images — written by CI on every push here,
+                                     # has 1 real entry from the first successful build
 
 gb_stable
-└── [ComfyUI source] — currently stale, last touched long before this pipeline existed
+├── [ComfyUI source] — currently stale, last touched long before this pipeline existed
+└── branch protection ENABLED (require PR before merge) — verified via GitHub API,
+    "protected": true. Exact rule contents (e.g. required approval count) not
+    independently re-verified beyond what the admin configured.
 ```
 
 > **Important:** Workflow `.yml` files MUST live on the `master` (default) branch. GitHub Actions always reads workflows from the default branch regardless of which branch triggered the push. A file with build logic sitting only on `gb_testing` will silently never run — this actually happened (see Section 10) and was corrected.
@@ -177,7 +181,7 @@ CMD ["python3.11", "main.py", "--listen", "0.0.0.0"]
 }
 ```
 
-**`registry_manifest.json`** (approved/stable manifest — not created yet; target shape)
+**`registry_manifest.json`** (approved/stable manifest — created, still empty; will get its first entry once a promotion actually runs)
 ```json
 {
   "images": []
@@ -259,10 +263,12 @@ jobs:
           git push
 ```
 
-`build-stable.yml` does not exist yet. When created, it should be identical except:
+`build-stable.yml` now exists on `master`, mirroring `build-testing.yml` except:
 - `branches: [gb_stable]`
-- Tags use a `stable-` prefix instead of relying on `latest`
+- Tags use a `stable-` prefix (`stable-latest`, `stable-<sha>`) instead of relying on `latest`
 - Writes to `registry_manifest.json` instead of `registry_manifest.testing.json`
+
+It has never actually run — `gb_stable` hasn't had a push (via merged PR) since it was added.
 
 ---
 
@@ -338,15 +344,15 @@ Status of each step against the real repo, as of 2026-09-02:
 ### Step 1 — Fork & Configure the Repository ✅ Done
 - Forked to `github.com/adampcarroll/ComfyUI`, `master` is default branch
 - Branches `gb_testing` and `gb_stable` exist
-- ⚠️ Not confirmed: whether `gb_stable` actually has branch protection (require PR, block direct push) configured in GitHub settings. This matters a lot — see Section 8's security discussion. Check Settings → Branches.
+- ✅ `gb_stable` branch protection enabled (require PR before merge). Verified via `GET /repos/adampcarroll/ComfyUI/branches/gb_stable` returning `"protected": true`. Exact rule contents not independently re-verified (that endpoint needs auth), but the branch is confirmed protected.
 
-### Step 2 — Add Studio Files to Master — Partially done
+### Step 2 — Add Studio Files to Master ✅ Done
 - `docker/Dockerfile` ✅
 - `docker/requirements.lock` ✅
 - `.github/workflows/build-testing.yml` ✅ (fixed this session)
-- `.github/workflows/build-stable.yml` ❌ not created
-- `registry_manifest.json` ❌ not created
-- `PROMOTION_CHECKLIST.md` ❌ not created (only exists as the template in Section 8 of this doc)
+- `.github/workflows/build-stable.yml` ✅ (added — never actually run yet)
+- `registry_manifest.json` ✅ (added, empty — no promotion has run yet to populate it)
+- `PROMOTION_CHECKLIST.md` ✅ (added as a real file)
 
 ### Step 3 — Generate requirements.lock ✅ Done (regenerated this session)
 
@@ -453,26 +459,33 @@ Push to gb_testing
    → build-testing.yml builds automatically → PROVEN WORKING (2026-09-02)
    → Testing image in GHCR, tag ghcr.io/adampcarroll/comfyui-studio:<sha>
    → Entry auto-appended to registry_manifest.testing.json (no gate — unapproved by design)
-   → Admin validates against PROMOTION_CHECKLIST.md (file doesn't exist yet — see Section 10)
+   → Admin validates against PROMOTION_CHECKLIST.md (real file, repo root)
    → Admin opens a PR: gb_testing → gb_stable
-   → PR reviewed and merged (this merge IS the approval gate)
-   → build-stable.yml builds automatically (workflow doesn't exist yet — see Section 10)
+   → PR reviewed and merged (branch protection now enabled — this merge IS the approval gate)
+   → build-stable.yml builds automatically (exists on master — UNTESTED, never fired)
    → Stable image in GHCR
    → registry_manifest.json (approved) updated
    → Available for New-ComfyProject.ps1 to use for real client projects
 ```
 
-**Nothing past "testing image in GHCR" has ever been exercised.** `gb_stable` has never received a promotion under this pipeline.
+**Nothing past "testing image in GHCR" has ever been exercised.** `gb_stable` has never received a promotion under this pipeline. All the pieces now exist (checklist, workflow, empty manifest, branch protection) — the first real promotion PR just hasn't happened yet.
 
 ### What a Pull Request actually is, for reference
-A PR is GitHub's mechanism for proposing "merge branch A into branch B" as a reviewable, approvable action instead of a direct push. If `gb_stable` has branch protection enabled, GitHub refuses direct pushes to it — the only way changes land is through an approved, merged PR. That PR merge is what makes "promotion" a real security gate: an unreviewed image cannot physically reach `gb_stable`, and therefore cannot reach `registry_manifest.json`, without a human clicking merge.
+A PR is GitHub's mechanism for proposing "merge branch A into branch B" as a reviewable, approvable action instead of a direct push. `gb_stable` now has branch protection enabled (confirmed via API: `"protected": true`), so GitHub refuses direct pushes to it — the only way changes land is through an approved, merged PR. That PR merge is what makes "promotion" a real security gate: an unreviewed image cannot physically reach `gb_stable`, and therefore cannot reach `registry_manifest.json`, without a human clicking merge.
 
-### Promotion Checklist (`PROMOTION_CHECKLIST.md` — not created yet)
+### Promotion Checklist (`PROMOTION_CHECKLIST.md` — real file, repo root)
+
+Same content as the original template, plus a header identifying exactly which image is being promoted (tag/digest/commit) so it's unambiguous what the checklist was actually run against:
 
 ```markdown
-## Promotion Checklist
+# Promotion Checklist
 
-### Functional
+## Which image is being promoted
+- Testing image tag: ___________
+- Testing image digest: sha256:___________
+- ComfyUI commit: ___________
+
+## Functional
 - [ ] Basic txt2img workflow runs cleanly
 - [ ] SDXL checkpoint loads without errors
 - [ ] Shared_Assets models accessible via extra_model_paths
@@ -480,19 +493,18 @@ A PR is GitHub's mechanism for proposing "merge branch A into branch B" as a rev
 - [ ] Output files write to correct project folder
 - [ ] Port auto-detection works correctly
 
-### Security
+## Security
 - [ ] Air-gapped mode confirmed (no outbound traffic when disabled)
 - [ ] Container runs as non-root user (comfyuser)
 - [ ] No unexpected ports exposed
 
-### Compatibility
-- [ ] Tested on NVIDIA card (note GPU model: _________)
+## Compatibility
+- [ ] Tested on an NVIDIA card (GPU model: _________)
 - [ ] Tested on Windows Docker Desktop
 
-### Sign-off
+## Sign-off
 - Tested by: ___________
 - Date: ___________
-- Testing image digest: sha256:___________
 - Notes:
 ```
 
@@ -500,7 +512,7 @@ The idea: this checklist gets filled in and pasted into the PR description befor
 
 ### Updating registry_manifest.json (stable)
 
-Once `build-stable.yml` exists, this should happen automatically on merge, the same way `registry_manifest.testing.json` already does. Manual fallback (matches the original design) if automation isn't wired up yet: copy the digest from the Actions build log into `registry_manifest.json` by hand.
+`build-stable.yml` now handles this automatically on merge, the same way `registry_manifest.testing.json` already works for testing builds — but it has never actually fired, since no PR into `gb_stable` has ever been merged. First real promotion will be the first test of this.
 
 ---
 
@@ -561,13 +573,16 @@ deploy:
 - `requirements.lock` missing a pin for `setuptools`, which `--require-hashes` rejects — regenerated with `--allow-unsafe`
 - `gb_testing` was missing the entire `docker/` folder — fixed by merging `master` into it
 
+### Resolved in the follow-up session (still 2026-09-02)
+- ~~Verify `gb_stable` branch protection~~ — enabled by the user, confirmed via API (`"protected": true`)
+- ~~Create `PROMOTION_CHECKLIST.md`~~ — added as a real file, includes an "image being promoted" header (tag/digest/commit) plus the original Functional/Security/Compatibility/Sign-off sections
+- ~~Write `build-stable.yml`~~ — added, mirrors `build-testing.yml`, triggers on `gb_stable`, writes `registry_manifest.json` with `stable-` tag prefix
+- ~~Create empty `registry_manifest.json` on `master`~~ — done
+
 ### Immediate — before promoting anything to stable
-- [ ] Verify `gb_stable` actually has branch protection requiring a PR (check GitHub Settings → Branches — not confirmed this session)
-- [ ] Create `PROMOTION_CHECKLIST.md` as a real file in the repo (currently only exists as the template above)
-- [ ] Write `build-stable.yml` (mirrors `build-testing.yml`, triggers on `gb_stable`, writes to `registry_manifest.json`)
-- [ ] Create empty `registry_manifest.json` on `master`
-- [ ] Actually exercise a full promotion: open a PR `gb_testing` → `gb_stable`, merge it, confirm `build-stable.yml` fires and the stable manifest updates
+- [ ] Actually exercise a full promotion: open a PR `gb_testing` → `gb_stable`, merge it, confirm `build-stable.yml` fires and the stable manifest updates. **Nothing has run this workflow yet — completely unverified.**
 - [ ] `gb_stable` is currently very stale (last commit `a1c101f8`, far behind `master`) — the first real promotion PR will be large; consider whether to do it incrementally
+- [ ] Fill in `PROMOTION_CHECKLIST.md` for the first testing image (tag `2026-09-02-7c4bede`) before opening that first PR
 
 ### Soon — before touching the PowerShell script
 - [ ] Update `New-ComfyProject.ps1` (renamed from `Project_Start_06.ps1`) to read the image tag/digest from `registry_manifest.json` instead of the hardcoded `comfyui-studio:2025-01-15`
