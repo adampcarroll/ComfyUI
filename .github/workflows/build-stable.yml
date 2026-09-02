@@ -1,15 +1,15 @@
-name: Build Studio ComfyUI Image
+name: Build Studio ComfyUI Image (Stable)
 
 on:
   push:
     branches:
-      - gb_testing   # only builds when YOU decide to update
+      - gb_stable   # only fires on a merged, approved PR — see PROMOTION_CHECKLIST.md
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit registry_manifest.testing.json back
+      contents: write   # needed to commit registry_manifest.json back
       packages: write   # needed to push to GHCR
 
     steps:
@@ -35,8 +35,8 @@ jobs:
           file: ./docker/Dockerfile
           push: true
           tags: |
-            ghcr.io/adampcarroll/comfyui-studio:latest
-            ghcr.io/adampcarroll/comfyui-studio:${{ steps.vars.outputs.SHORT_SHA }}
+            ghcr.io/adampcarroll/comfyui-studio:stable-latest
+            ghcr.io/adampcarroll/comfyui-studio:stable-${{ steps.vars.outputs.SHORT_SHA }}
           build-args: |
             COMFYUI_COMMIT=${{ github.sha }}
 
@@ -46,14 +46,16 @@ jobs:
           echo "TAG=${{ steps.vars.outputs.SHORT_SHA }}" >> $GITHUB_ENV
           echo "DIGEST=${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
 
-      - name: Update testing manifest
-        # Unapproved images only — never read by New-ComfyProject.ps1 for real
-        # client projects. Only registry_manifest.json (stable) is approved.
+      - name: Update approved manifest
+        # This is the manifest New-ComfyProject.ps1 reads for real client
+        # projects. Only reachable by pushes to gb_stable, which (once branch
+        # protection is enabled) only happen via an approved, merged PR from
+        # gb_testing — see PROMOTION_CHECKLIST.md.
         run: |
           DATE=$(date +%Y-%m-%d)
           NEW_ENTRY=$(cat <<EOF
           {
-            "tag": "${{ steps.vars.outputs.SHORT_SHA }}",
+            "tag": "stable-${{ steps.vars.outputs.SHORT_SHA }}",
             "digest": "${{ steps.build.outputs.digest }}",
             "comfyui_commit": "${{ github.sha }}",
             "built_date": "${DATE}",
@@ -61,12 +63,11 @@ jobs:
           }
           EOF
           )
-          # Append to manifest and commit back to repo
-          jq ".images += [${NEW_ENTRY}]" registry_manifest.testing.json > tmp.json
-          mv tmp.json registry_manifest.testing.json
+          jq ".images += [${NEW_ENTRY}]" registry_manifest.json > tmp.json
+          mv tmp.json registry_manifest.json
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add registry_manifest.testing.json
-          git commit -m "ci: add testing image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
+          git add registry_manifest.json
+          git commit -m "ci: add stable image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
           git pull --rebase
           git push
