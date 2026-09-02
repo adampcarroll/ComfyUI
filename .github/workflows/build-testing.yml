@@ -53,7 +53,7 @@ jobs:
           DATE=$(date +%Y-%m-%d)
           NEW_ENTRY=$(cat <<EOF
           {
-            "tag": "${DATE}-${{ steps.vars.outputs.SHORT_SHA }}",
+            "tag": "${{ steps.vars.outputs.SHORT_SHA }}",
             "digest": "${{ steps.build.outputs.digest }}",
             "comfyui_commit": "${{ github.sha }}",
             "built_date": "${DATE}",
