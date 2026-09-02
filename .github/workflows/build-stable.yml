@@ -48,9 +48,12 @@ jobs:
 
       - name: Update approved manifest
         # This is the manifest New-ComfyProject.ps1 reads for real client
-        # projects. Only reachable by pushes to gb_stable, which (once branch
-        # protection is enabled) only happen via an approved, merged PR from
-        # gb_testing — see PROMOTION_CHECKLIST.md.
+        # projects. gb_stable has branch protection (require PR before
+        # merge), which also blocks direct pushes from this workflow's own
+        # GITHUB_TOKEN — so instead of committing back to gb_stable, this
+        # commits to master, the documented canonical home for
+        # registry_manifest.json. gb_stable itself never receives an
+        # auto-commit, matching how it's meant to only change via PR merge.
         run: |
           DATE=$(date +%Y-%m-%d)
           NEW_ENTRY=$(cat <<EOF
@@ -63,11 +66,13 @@ jobs:
           }
           EOF
           )
-          jq ".images += [${NEW_ENTRY}]" registry_manifest.json > tmp.json
-          mv tmp.json registry_manifest.json
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+          git fetch origin master
+          git checkout master
+          jq ".images += [${NEW_ENTRY}]" registry_manifest.json > tmp.json
+          mv tmp.json registry_manifest.json
           git add registry_manifest.json
           git commit -m "ci: add stable image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
-          git pull --rebase
-          git push
+          git pull --rebase origin master
+          git push origin master
