@@ -167,31 +167,20 @@ RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
 USER comfyuser
 
 EXPOSE 8188
-CMD ["python3.11", "main.py", "--listen", "0.0.0.0"]
+CMD ["sh", "-c", "exec python3.11 main.py --listen 0.0.0.0 $CLI_ARGS"]
 ```
 
-**`registry_manifest.testing.json`** (real content, `gb_testing`, as of the second testing build)
+**`registry_manifest.testing.json`** (`gb_testing` — 5 real entries as of the `CLI_ARGS` fix build; newest is the one to test against)
 ```json
 {
-  "images": [
-    {
-      "tag": "7c4bede",
-      "digest": "sha256:ffdf411919ffbb1c335f2924faea8d83d18f2bb453fc990bd5952274eb563629",
-      "comfyui_commit": "7c4beded2a688af6c0c08974e59de04f20b62269",
-      "built_date": "2026-09-02",
-      "branch": "gb_testing"
-    },
-    {
-      "tag": "61b6b42",
-      "digest": "sha256:08416b1a303e0db0a930306428beae364783f823777e51678d0ce05a2a96fde7",
-      "comfyui_commit": "61b6b4200b3764241e2df05564b6bd97680e453d",
-      "built_date": "2026-09-02",
-      "branch": "gb_testing"
-    }
-  ]
+  "tag": "3af2690",
+  "digest": "sha256:81a2825f1f8449ad570cd4771c71d398e5595751689534e238b7c3040a0077a4",
+  "comfyui_commit": "3af2690710f035da3640f1b02926a1ead8ecd931",
+  "built_date": "2026-09-02",
+  "branch": "gb_testing"
 }
 ```
-Note `tag` is the real short-sha tag that was actually pushed to GHCR (e.g. `docker pull ghcr.io/adampcarroll/comfyui-studio:7c4bede` works) — an earlier version of this workflow recorded a fabricated `<date>-<short-sha>` string here that was never a real tag; see Section 10.
+This is the image that has the `CLI_ARGS` fix — earlier entries (`7c4bede`, `61b6b42`, `8399545`, `2df2fff`) predate it. Note `tag` is the real short-sha tag that was actually pushed to GHCR (e.g. `docker pull ghcr.io/adampcarroll/comfyui-studio:3af2690` works) — an earlier version of this workflow recorded a fabricated `<date>-<short-sha>` string here that was never a real tag; see Section 10.
 
 **`registry_manifest.json`** (approved/stable manifest, `master` — real content, first promoted image)
 ```json
@@ -633,6 +622,15 @@ deploy:
 - ~~Exercise a full promotion~~ — **done.** PR #1 (`gb_testing` → `gb_stable`) opened and merged by the user. `build-stable.yml` fired for the first time.
 - ~~`build-stable.yml` push conflicts with `gb_stable` branch protection~~ — the manifest-update step tried to `git push` its commit directly to `gb_stable`, which now blocks all direct pushes (including from the workflow's own token) — this is exactly why it failed on the very first real run, even though the image build/push itself succeeded. Fixed: that step now commits to `master` instead. First entry in `registry_manifest.json` was added by hand (digest confirmed by pulling the image directly) since CI didn't get to do it.
 - `gb_stable` being stale turned out not to matter in practice — the huge diff (many months of upstream ComfyUI history) merged without conflict.
+
+### Resolved during pre-script verification (still 2026-09-02)
+- ~~Confirm `Shared_Assets/custom_nodes` actually loads~~ — **confirmed working**, and confirmed thoroughly: `extra_model_paths.yaml`'s `custom_nodes` mapping causes ComfyUI to scan and attempt-load every package under `/shared_assets/custom_nodes`, not just run prestartup scripts. No change needed to `Project_Start_06.ps1`'s existing mount layout.
+- ~~`CLI_ARGS` environment variable did nothing at all~~ — the Dockerfile's `CMD` was a bare exec-form array, which never invokes a shell and therefore never expands `$CLI_ARGS`. Verified by running the container with `CLI_ARGS` unset vs. set to a real flag: byte-identical output either way. `extra_model_paths.yaml` only ever loaded via ComfyUI's own auto-detection of that filename at its default path, unrelated to any flag. Fixed to `CMD ["sh", "-c", "exec python3.11 main.py --listen 0.0.0.0 $CLI_ARGS"]` — the `exec` keeps `python3.11` as PID 1 (clean `docker stop` signal handling) while still letting `$CLI_ARGS` expand. Re-verified with `CLI_ARGS="--cpu ..."` actually taking effect.
+
+### Flagged for later — found during pre-script verification, not fixed yet
+- **3 of 5 `Shared_Assets/custom_nodes` packages fail to import**: `ComfyUI-Manager` (`No module named 'git'`), `comfyui_segment_anything` (`No module named 'segment_anything'`), `was-node-suite-comfyui` (`No module named 'numba'`). Root cause: each has its own `requirements.txt`, and the base image only ever installs ComfyUI's own `docker/requirements.lock` — nothing installs a mounted custom node's dependencies. Only `ComfyUI_IPAdapter_plus` and `rgthree-comfy` currently import cleanly. This is a real architectural decision, not a quick fix — the trade-off:
+  - **Bake known shared-node deps into `requirements.lock`** — matches the "pin everything" philosophy, but couples image versioning to custom-node curation (adding a vetted node means a new image build, not just dropping a folder into `Shared_Assets`)
+  - **Auto-install each node's `requirements.txt` at container startup** — more flexible, but runs arbitrary pip installs at runtime (cuts against the reproducibility/trust model this whole pipeline is built on, and wouldn't work in air-gapped mode at all)
 
 ### Soon — before touching the PowerShell script
 - [ ] Update `New-ComfyProject.ps1` (renamed from `Project_Start_06.ps1`) to read the image tag/digest from `registry_manifest.json` instead of the hardcoded `comfyui-studio:2025-01-15`
