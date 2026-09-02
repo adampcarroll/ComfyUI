@@ -1,0 +1,72 @@
+name: Build Studio ComfyUI Image
+
+on:
+  push:
+    branches:
+      - gb_testing   # only builds when YOU decide to update
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to commit registry_manifest.testing.json back
+      packages: write   # needed to push to GHCR
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get short commit hash
+        id: vars
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}  # automatic, no setup needed
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/adampcarroll/comfyui-studio:latest
+            ghcr.io/adampcarroll/comfyui-studio:${{ steps.vars.outputs.SHORT_SHA }}
+          build-args: |
+            COMFYUI_COMMIT=${{ github.sha }}
+
+      - name: Capture digest
+        run: |
+          echo "Image digest: ${{ steps.build.outputs.digest }}"
+          echo "TAG=${{ steps.vars.outputs.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "DIGEST=${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
+
+      - name: Update testing manifest
+        # Unapproved images only — never read by New-ComfyProject.ps1 for real
+        # client projects. Only registry_manifest.json (stable) is approved.
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          NEW_ENTRY=$(cat <<EOF
+          {
+            "tag": "${DATE}-${{ steps.vars.outputs.SHORT_SHA }}",
+            "digest": "${{ steps.build.outputs.digest }}",
+            "comfyui_commit": "${{ github.sha }}",
+            "built_date": "${DATE}",
+            "branch": "${{ github.ref_name }}"
+          }
+          EOF
+          )
+          # Append to manifest and commit back to repo
+          jq ".images += [${NEW_ENTRY}]" registry_manifest.testing.json > tmp.json
+          mv tmp.json registry_manifest.testing.json
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add registry_manifest.testing.json
+          git commit -m "ci: add testing image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
+          git pull --rebase
+          git push
