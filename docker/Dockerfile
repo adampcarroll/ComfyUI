@@ -54,4 +54,10 @@ RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
 USER comfyuser
 
 EXPOSE 8188
-CMD ["python3.11", "main.py", "--listen", "0.0.0.0"]
+# Explicit sh -c (not a bare exec-form array) so $CLI_ARGS actually expands —
+# a plain exec-form CMD never invokes a shell, so an env var set via
+# docker-compose would silently be ignored no matter what it's set to.
+# `exec` inside the shell replaces it with the python process (PID 1), so
+# SIGTERM from `docker stop` reaches python directly instead of the
+# container hanging until the stop timeout.
+CMD ["sh", "-c", "exec python3.11 main.py --listen 0.0.0.0 $CLI_ARGS"]
