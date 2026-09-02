@@ -3,7 +3,7 @@
 # Pin your base image to a digest — get this by running:
 # docker pull nvidia/cuda:12.3.1-runtime-ubuntu22.04
 # docker inspect --format='{{index .RepoDigests 0}}' nvidia/cuda:12.3.1-runtime-ubuntu22.04
-FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04@sha256:acb1709dcd8bd8500ab63c9a7aa3d7e5132bebd5ac519445b81969131b08a8a3
+FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04@sha256:3e7f34f5e9dd5315b67ab30d71a92e578c5911236e14370647df020bdee2ca8a
 
 # Build arg injected by GitHub Actions — the exact commit to build from
 ARG COMFYUI_COMMIT
