@@ -1,3 +1,11 @@
 {
-  "images": []
+  "images": [
+    {
+      "tag": "2026-09-02-7c4bede",
+      "digest": "sha256:ffdf411919ffbb1c335f2924faea8d83d18f2bb453fc990bd5952274eb563629",
+      "comfyui_commit": "7c4beded2a688af6c0c08974e59de04f20b62269",
+      "built_date": "2026-09-02",
+      "branch": "gb_testing"
+    }
+  ]
 }
