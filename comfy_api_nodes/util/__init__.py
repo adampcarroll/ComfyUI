@@ -9,6 +9,8 @@ from .client import (
 from .conversions import (
     audio_bytes_to_audio_input,
     audio_input_to_mp3,
+    audio_ndarray_to_bytesio,
+    audio_tensor_to_contiguous_ndarray,
     audio_to_base64_string,
     bytesio_to_image_tensor,
     convert_mask_to_image,
@@ -17,6 +19,7 @@ from .conversions import (
     image_tensor_pair_to_batch,
     pil_to_bytesio,
     resize_mask_to_image,
+    resize_video_to_pixel_budget,
     tensor_to_base64_string,
     tensor_to_bytesio,
     tensor_to_pil,
@@ -33,6 +36,7 @@ from .download_helpers import (
     download_url_to_video_output,
 )
 from .upload_helpers import (
+    upload_3d_model_to_comfyapi,
     upload_audio_to_comfyapi,
     upload_file_to_comfyapi,
     upload_image_to_comfyapi,
@@ -62,6 +66,7 @@ __all__ = [
     "sync_op",
     "sync_op_raw",
     # Upload helpers
+    "upload_3d_model_to_comfyapi",
     "upload_audio_to_comfyapi",
     "upload_file_to_comfyapi",
     "upload_image_to_comfyapi",
@@ -76,6 +81,8 @@ __all__ = [
     # Conversions
     "audio_bytes_to_audio_input",
     "audio_input_to_mp3",
+    "audio_ndarray_to_bytesio",
+    "audio_tensor_to_contiguous_ndarray",
     "audio_to_base64_string",
     "bytesio_to_image_tensor",
     "convert_mask_to_image",
@@ -84,6 +91,7 @@ __all__ = [
     "image_tensor_pair_to_batch",
     "pil_to_bytesio",
     "resize_mask_to_image",
+    "resize_video_to_pixel_budget",
     "tensor_to_base64_string",
     "tensor_to_bytesio",
     "tensor_to_pil",

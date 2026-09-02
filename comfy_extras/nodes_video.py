@@ -17,7 +17,8 @@ class SaveWEBM(io.ComfyNode):
         return io.Schema(
             node_id="SaveWEBM",
             search_aliases=["export webm"],
-            category="image/video",
+            display_name="Save WEBM",
+            category="video",
             is_experimental=True,
             inputs=[
                 io.Image.Input("images"),
@@ -72,7 +73,8 @@ class SaveVideo(io.ComfyNode):
             node_id="SaveVideo",
             search_aliases=["export video"],
             display_name="Save Video",
-            category="image/video",
+            category="video",
+            essentials_category="Basics",
             description="Saves the input images to your ComfyUI output directory.",
             inputs=[
                 io.Video.Input("video", tooltip="The video to save."),
@@ -120,7 +122,7 @@ class CreateVideo(io.ComfyNode):
             node_id="CreateVideo",
             search_aliases=["images to video"],
             display_name="Create Video",
-            category="image/video",
+            category="video",
             description="Create a video from images.",
             inputs=[
                 io.Image.Input("images", tooltip="The images to create a video from."),
@@ -145,7 +147,7 @@ class GetVideoComponents(io.ComfyNode):
             node_id="GetVideoComponents",
             search_aliases=["extract frames", "split video", "video to images", "demux"],
             display_name="Get Video Components",
-            category="image/video",
+            category="video",
             description="Extracts all components from a video: frames, audio, and framerate.",
             inputs=[
                 io.Video.Input("video", tooltip="The video to extract components from."),
@@ -173,7 +175,8 @@ class LoadVideo(io.ComfyNode):
             node_id="LoadVideo",
             search_aliases=["import video", "open video", "video file"],
             display_name="Load Video",
-            category="image/video",
+            category="video",
+            essentials_category="Basics",
             inputs=[
                 io.Combo.Input("file", options=sorted(files), upload=io.UploadType.video),
             ],
@@ -202,6 +205,57 @@ class LoadVideo(io.ComfyNode):
 
         return True
 
+class VideoSlice(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="Video Slice",
+            display_name="Video Slice",
+            search_aliases=[
+                "trim video duration",
+                "skip first frames",
+                "frame load cap",
+                "start time",
+            ],
+            category="video",
+            essentials_category="Video Tools",
+            inputs=[
+                io.Video.Input("video"),
+                io.Float.Input(
+                    "start_time",
+                    default=0.0,
+                    max=1e5,
+                    min=-1e5,
+                    step=0.001,
+                    tooltip="Start time in seconds",
+                ),
+                io.Float.Input(
+                    "duration",
+                    default=0.0,
+                    min=0.0,
+                    step=0.001,
+                    tooltip="Duration in seconds, or 0 for unlimited duration",
+                ),
+                io.Boolean.Input(
+                    "strict_duration",
+                    default=False,
+                    tooltip="If True, when the specified duration is not possible, an error will be raised.",
+                ),
+            ],
+            outputs=[
+                io.Video.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, video: io.Video.Type, start_time: float, duration: float, strict_duration: bool) -> io.NodeOutput:
+        trimmed = video.as_trimmed(start_time, duration, strict_duration=strict_duration)
+        if trimmed is not None:
+            return io.NodeOutput(trimmed)
+        raise ValueError(
+            f"Failed to slice video:\nSource duration: {video.get_duration()}\nStart time: {start_time}\nTarget duration: {duration}"
+        )
+
 
 class VideoExtension(ComfyExtension):
     @override
@@ -212,6 +266,7 @@ class VideoExtension(ComfyExtension):
             CreateVideo,
             GetVideoComponents,
             LoadVideo,
+            VideoSlice,
         ]
 
 async def comfy_entrypoint() -> VideoExtension:
