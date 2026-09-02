@@ -3,13 +3,13 @@ name: Build Studio ComfyUI Image
 on:
   push:
     branches:
-      - gb-testing   # only builds when YOU decide to update
+      - gb_testing   # only builds when YOU decide to update
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # needed to commit registry_manifest.testing.json back
       packages: write   # needed to push to GHCR
 
     steps:
@@ -32,6 +32,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./docker/Dockerfile
           push: true
           tags: |
             ghcr.io/adampcarroll/comfyui-studio:latest
@@ -45,9 +46,9 @@ jobs:
           echo "TAG=${{ steps.vars.outputs.SHORT_SHA }}" >> $GITHUB_ENV
           echo "DIGEST=${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
 
-      - name: Update registry manifest on LucidLink
-        # This step commits an updated manifest back to the repo
-        # Your PowerShell script reads this file
+      - name: Update testing manifest
+        # Unapproved images only — never read by New-ComfyProject.ps1 for real
+        # client projects. Only registry_manifest.json (stable) is approved.
         run: |
           DATE=$(date +%Y-%m-%d)
           NEW_ENTRY=$(cat <<EOF
@@ -61,10 +62,11 @@ jobs:
           EOF
           )
           # Append to manifest and commit back to repo
-          jq ".images += [${NEW_ENTRY}]" registry_manifest.json > tmp.json
-          mv tmp.json registry_manifest.json
+          jq ".images += [${NEW_ENTRY}]" registry_manifest.testing.json > tmp.json
+          mv tmp.json registry_manifest.testing.json
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add registry_manifest.json
-          git commit -m "ci: add image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
+          git add registry_manifest.testing.json
+          git commit -m "ci: add testing image ${DATE}-${{ steps.vars.outputs.SHORT_SHA }}"
+          git pull --rebase
           git push
