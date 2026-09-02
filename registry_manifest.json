@@ -1,3 +1,11 @@
 {
-  "images": []
+  "images": [
+    {
+      "tag": "stable-b9e4efb",
+      "digest": "sha256:1710f72bde44199ff6d372dbc5e41d935d1a69fa0a813adc8a20eeea40bae3a9",
+      "comfyui_commit": "b9e4efbe49a1ff3601ea98a2891d67e5159f8ead",
+      "built_date": "2026-09-02",
+      "branch": "gb_stable"
+    }
+  ]
 }
