@@ -1,6 +1,6 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — First real test build succeeded on `gb_testing`. `gb_stable` now has branch protection (require PR before merge) and all the pieces needed to promote (`PROMOTION_CHECKLIST.md`, `build-stable.yml`, `registry_manifest.json`) exist, but a real promotion has never been exercised. `New-ComfyProject.ps1` does not yet read from the registry manifest.
+> **Status:** In Progress — The full pipeline is now proven end-to-end for the first time: testing build → manual GPU validation → promotion PR → stable build → approved manifest entry. Remaining major piece: `New-ComfyProject.ps1` still doesn't read from the registry manifest at all (hardcoded local image tag).
 > **Last Updated:** September 2, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
@@ -86,19 +86,23 @@ master (default branch)
 ├── docker/
 │   ├── Dockerfile                  # Pinned base image, builds real Python 3.11 from source
 │   └── requirements.lock           # Hash-verified Python dependency lockfile
-├── registry_manifest.json          # APPROVED images only — EXISTS, empty ({"images": []})
-└── PROMOTION_CHECKLIST.md          # EXISTS
+├── registry_manifest.json          # APPROVED images only — EXISTS, has its first real entry
+└── PROMOTION_CHECKLIST.md          # EXISTS, filled in for the first promoted image
 
 gb_testing
 ├── [ComfyUI source, merged forward from master as needed]
 └── registry_manifest.testing.json  # UNAPPROVED images — written by CI on every push here,
-                                     # has 1 real entry from the first successful build
+                                     # has 2 real entries so far
 
 gb_stable
-├── [ComfyUI source] — currently stale, last touched long before this pipeline existed
-└── branch protection ENABLED (require PR before merge) — verified via GitHub API,
-    "protected": true. Exact rule contents (e.g. required approval count) not
-    independently re-verified beyond what the admin configured.
+├── [ComfyUI source] — was very stale, first-ever promotion PR (#1) merged it forward
+├── branch protection ENABLED (require PR before merge) — verified via GitHub API,
+│   "protected": true. Exact rule contents (e.g. required approval count) not
+│   independently re-verified beyond what the admin configured.
+└── Does NOT carry its own live copy of registry_manifest.json going forward —
+    build-stable.yml commits approved entries to master instead (see Section 8's
+    "why master, not gb_stable" note). Any registry_manifest.json sitting in
+    gb_stable's own tree (from the PR merge) is a stale snapshot, not canonical.
 ```
 
 > **Important:** Workflow `.yml` files MUST live on the `master` (default) branch. GitHub Actions always reads workflows from the default branch regardless of which branch triggered the push. A file with build logic sitting only on `gb_testing` will silently never run — this actually happened (see Section 10) and was corrected.
@@ -166,27 +170,44 @@ EXPOSE 8188
 CMD ["python3.11", "main.py", "--listen", "0.0.0.0"]
 ```
 
-**`registry_manifest.testing.json`** (real content as of first successful build)
+**`registry_manifest.testing.json`** (real content, `gb_testing`, as of the second testing build)
 ```json
 {
   "images": [
     {
-      "tag": "2026-09-02-7c4bede",
+      "tag": "7c4bede",
       "digest": "sha256:ffdf411919ffbb1c335f2924faea8d83d18f2bb453fc990bd5952274eb563629",
       "comfyui_commit": "7c4beded2a688af6c0c08974e59de04f20b62269",
+      "built_date": "2026-09-02",
+      "branch": "gb_testing"
+    },
+    {
+      "tag": "61b6b42",
+      "digest": "sha256:08416b1a303e0db0a930306428beae364783f823777e51678d0ce05a2a96fde7",
+      "comfyui_commit": "61b6b4200b3764241e2df05564b6bd97680e453d",
       "built_date": "2026-09-02",
       "branch": "gb_testing"
     }
   ]
 }
 ```
+Note `tag` is the real short-sha tag that was actually pushed to GHCR (e.g. `docker pull ghcr.io/adampcarroll/comfyui-studio:7c4bede` works) — an earlier version of this workflow recorded a fabricated `<date>-<short-sha>` string here that was never a real tag; see Section 10.
 
-**`registry_manifest.json`** (approved/stable manifest — created, still empty; will get its first entry once a promotion actually runs)
+**`registry_manifest.json`** (approved/stable manifest, `master` — real content, first promoted image)
 ```json
 {
-  "images": []
+  "images": [
+    {
+      "tag": "stable-b9e4efb",
+      "digest": "sha256:1710f72bde44199ff6d372dbc5e41d935d1a69fa0a813adc8a20eeea40bae3a9",
+      "comfyui_commit": "b9e4efbe49a1ff3601ea98a2891d67e5159f8ead",
+      "built_date": "2026-09-02",
+      "branch": "gb_stable"
+    }
+  ]
 }
 ```
+This entry was added by hand, not by CI — see Section 10 for why (`build-stable.yml`'s first run failed at exactly this step, root cause and fix documented there).
 
 **`.github/workflows/build-testing.yml`** (current, working version)
 ```yaml
@@ -263,12 +284,13 @@ jobs:
           git push
 ```
 
-`build-stable.yml` now exists on `master`, mirroring `build-testing.yml` except:
+`build-stable.yml` exists on `master`, mirroring `build-testing.yml` except:
 - `branches: [gb_stable]`
 - Tags use a `stable-` prefix (`stable-latest`, `stable-<sha>`) instead of relying on `latest`
 - Writes to `registry_manifest.json` instead of `registry_manifest.testing.json`
+- **Commits that manifest update to `master`, not `gb_stable`** — the build/push steps still run against the `gb_stable` checkout (that's what triggered the workflow), but the manifest write step explicitly does `git fetch origin master && git checkout master` first. This is a fix, not the original design — see the "why master, not gb_stable" note below.
 
-It has never actually run — `gb_stable` hasn't had a push (via merged PR) since it was added.
+It has now run once, on the first-ever merged promotion PR (#1, `gb_testing` → `gb_stable`). The build/push half succeeded on that first run; the manifest-write half failed and had to be fixed — full story in Section 10.
 
 ---
 
@@ -279,9 +301,13 @@ It has never actually run — `gb_stable` hasn't had a push (via merged PR) sinc
 ```
 D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\ComfyStudio\)
 ├── Shared_Assets\                  # Approved, reusable assets (read-only in containers)
-│   ├── checkpoints\
-│   ├── custom_nodes\               # Vetted nodes only
-│   ├── models\ (loras, vae, embeddings)
+│   ├── checkpoints\                # flat, top-level — some checkpoints live here directly
+│   ├── custom_nodes\               # Vetted nodes only (ComfyUI-Manager, IPAdapter_plus, etc.)
+│   ├── extra_model_paths.yaml      # tells ComfyUI where to find everything below — see note
+│   ├── models\                     # mirrors ComfyUI's own native models/ folder taxonomy
+│   │   ├── checkpoints\ (has its own subfolders, e.g. z-image\)
+│   │   ├── loras\, vae\, controlnet\, text_encoders\, diffusion_models\, model_patches\
+│   │   └── LLM\                    # non-standard — registered by a specific custom node, not base ComfyUI
 │   └── workflows\
 ├── Project_Start_04.ps1            # older iteration
 ├── Project_Start_05.ps1            # older iteration
@@ -293,6 +319,22 @@ D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\Comfy
 ├── docker\                         # local scratch copy, not the source of truth (that's the git repo)
 └── [per-client project folders, created by the script]
 ```
+
+### `extra_model_paths.yaml` — a real bug found and fixed during GPU validation
+
+The file that had been sitting in `Shared_Assets/` mapped every category (`vae`, `loras`, `controlnet`, `embeddings`, `clip`, `clip_vision`, `upscale_models`) directly under the mount root (e.g. `vae: vae` → `/shared_assets/vae`), with no `models/` prefix, and had no `text_encoders`/`diffusion_models` keys at all. But every actual model file was sitting under `Shared_Assets/models/<category>/`. Net effect: **only `checkpoints/` (flat) and `custom_nodes/` were ever actually visible to any container** — the rest of the shared model library was silently invisible, the whole time, to every project.
+
+Confirmed against ComfyUI's own reference (`extra_model_paths.yaml.example` in the repo) and its actual folder taxonomy (`folder_paths.py`) — the official/current category list is:
+```
+checkpoints, configs, loras, vae, text_encoders, diffusion_models,
+clip_vision, style_models, embeddings, diffusers, vae_approx,
+controlnet, gligen, upscale_models, latent_upscale_models,
+hypernetworks, photomaker, classifiers, model_patches,
+audio_encoders, frame_interpolation, optical_flow
+```
+Every real category path needs the `models/` prefix (this is also why some workflow examples reference `models/clip/` or `models/unet/` — those are supported legacy aliases for `text_encoders`/`diffusion_models` respectively, not a different structure). Subfolders inside a category (e.g. `models/loras/sd15/`) are fine — ComfyUI recursively scans and shows them as a path prefix in the loader dropdown. `LLM` is not a base ComfyUI category at all — it's registered by a specific custom node (likely ComfyUI-QwenVL), so it only works if that node is actually installed.
+
+Fixed `extra_model_paths.yaml` to prefix every category with `models/` (keeping `checkpoints` pointing at both the flat folder and `models/checkpoints`, via a multi-line value, so nothing already there stopped working), and added `text_encoders`/`diffusion_models`/`model_patches`. Re-verified working via a manual GPU test run (see Section 8's promotion checklist).
 
 ### Shared vs Project Assets
 
@@ -452,23 +494,25 @@ Unchanged from original design — see Appendix for the exact commands.
 
 ## 8. Image Management — Build & Promote Pipeline
 
-### The Pipeline (as actually designed and now partly proven)
+### The Pipeline (now proven end-to-end, 2026-09-02)
 
 ```
 Push to gb_testing
-   → build-testing.yml builds automatically → PROVEN WORKING (2026-09-02)
-   → Testing image in GHCR, tag ghcr.io/adampcarroll/comfyui-studio:<sha>
+   → build-testing.yml builds automatically → PROVEN WORKING
+   → Testing image in GHCR, tag ghcr.io/adampcarroll/comfyui-studio:<short-sha>
    → Entry auto-appended to registry_manifest.testing.json (no gate — unapproved by design)
-   → Admin validates against PROMOTION_CHECKLIST.md (real file, repo root)
-   → Admin opens a PR: gb_testing → gb_stable
-   → PR reviewed and merged (branch protection now enabled — this merge IS the approval gate)
-   → build-stable.yml builds automatically (exists on master — UNTESTED, never fired)
-   → Stable image in GHCR
-   → registry_manifest.json (approved) updated
-   → Available for New-ComfyProject.ps1 to use for real client projects
+   → Admin validates against PROMOTION_CHECKLIST.md → PROVEN, validated on real RTX 5090 hardware
+   → Admin opens a PR: gb_testing → gb_stable → PROVEN (PR #1)
+   → PR reviewed and merged (branch protection — this merge IS the approval gate) → PROVEN
+   → build-stable.yml builds automatically → PROVEN (image build/push half)
+   → Stable image in GHCR (ghcr.io/adampcarroll/comfyui-studio:stable-<short-sha>) → PROVEN
+   → registry_manifest.json (approved) updated → had to be fixed + entered manually
+     the first time (CI's own commit was blocked by gb_stable's branch protection —
+     see "Why master, not gb_stable" below); automatic for future promotions
+   → Available for New-ComfyProject.ps1 to use for real client projects → NOT YET WIRED UP
 ```
 
-**Nothing past "testing image in GHCR" has ever been exercised.** `gb_stable` has never received a promotion under this pipeline. All the pieces now exist (checklist, workflow, empty manifest, branch protection) — the first real promotion PR just hasn't happened yet.
+**First real promotion, PR #1, is done.** `gb_stable` merged commit `b9e4efbe49a1ff3601ea98a2891d67e5159f8ead`, image `ghcr.io/adampcarroll/comfyui-studio:stable-b9e4efb` (digest `sha256:1710f72bde44199ff6d372dbc5e41d935d1a69fa0a813adc8a20eeea40bae3a9`) is in `registry_manifest.json`. The only unproven piece left in the whole pipeline is the very last arrow: `New-ComfyProject.ps1` actually reading and using this manifest.
 
 ### What a Pull Request actually is, for reference
 A PR is GitHub's mechanism for proposing "merge branch A into branch B" as a reviewable, approvable action instead of a direct push. `gb_stable` now has branch protection enabled (confirmed via API: `"protected": true`), so GitHub refuses direct pushes to it — the only way changes land is through an approved, merged PR. That PR merge is what makes "promotion" a real security gate: an unreviewed image cannot physically reach `gb_stable`, and therefore cannot reach `registry_manifest.json`, without a human clicking merge.
@@ -512,7 +556,11 @@ The idea: this checklist gets filled in and pasted into the PR description befor
 
 ### Updating registry_manifest.json (stable)
 
-`build-stable.yml` now handles this automatically on merge, the same way `registry_manifest.testing.json` already works for testing builds — but it has never actually fired, since no PR into `gb_stable` has ever been merged. First real promotion will be the first test of this.
+`build-stable.yml` handles this automatically on merge — but writes to `master`, not `gb_stable`. Manual fallback (same as the original design, and what actually happened for the very first entry): copy the digest from the Actions build log — or `docker pull` the tag yourself and read `docker inspect --format='{{index .RepoDigests 0}}'` if the log isn't available — into `registry_manifest.json` on `master` by hand.
+
+### Why `master`, not `gb_stable`, for the approved manifest commit
+
+This wasn't the original design — it's a fix. The first real promotion (PR #1) revealed a genuine conflict: `build-stable.yml`'s manifest-update step tried to `git push` its commit directly to `gb_stable`, but `gb_stable` now has branch protection (require PR before merge) enabled, which blocks *all* direct pushes — including from the workflow's own `GITHUB_TOKEN`, not just from a human. The build/push steps succeeded (a real image landed in GHCR), but the manifest-write step failed outright. Fixed by having that step commit to `master` instead, which has no protection and is the documented canonical home for `registry_manifest.json` anyway. `gb_stable` now never receives an auto-commit — it only ever changes via a merged PR, which is arguably more correct than the original design.
 
 ---
 
@@ -579,10 +627,12 @@ deploy:
 - ~~Write `build-stable.yml`~~ — added, mirrors `build-testing.yml`, triggers on `gb_stable`, writes `registry_manifest.json` with `stable-` tag prefix
 - ~~Create empty `registry_manifest.json` on `master`~~ — done
 
-### Immediate — before promoting anything to stable
-- [ ] Actually exercise a full promotion: open a PR `gb_testing` → `gb_stable`, merge it, confirm `build-stable.yml` fires and the stable manifest updates. **Nothing has run this workflow yet — completely unverified.**
-- [ ] `gb_stable` is currently very stale (last commit `a1c101f8`, far behind `master`) — the first real promotion PR will be large; consider whether to do it incrementally
-- [ ] Fill in `PROMOTION_CHECKLIST.md` for the first testing image (tag `2026-09-02-7c4bede`) before opening that first PR
+### Resolved in the promotion-day session (still 2026-09-02)
+- ~~Fill in `PROMOTION_CHECKLIST.md`~~ — done for image `7c4bede`, scope deliberately limited to what the image itself controls (compose-level items like air-gap/port-auto-detect explicitly marked out of scope until the PowerShell script is wired up)
+- ~~Fabricated tag mismatch~~ — both `build-testing.yml` and `build-stable.yml`'s manifest-update steps recorded a made-up `<date>-<short-sha>` string as the image `tag`, but the actual pushed docker tag was always just `<short-sha>` (or `stable-<short-sha>`) — anyone pulling by the recorded tag got `not found`. Fixed to record the real tag; corrected the one existing bad entry.
+- ~~Exercise a full promotion~~ — **done.** PR #1 (`gb_testing` → `gb_stable`) opened and merged by the user. `build-stable.yml` fired for the first time.
+- ~~`build-stable.yml` push conflicts with `gb_stable` branch protection~~ — the manifest-update step tried to `git push` its commit directly to `gb_stable`, which now blocks all direct pushes (including from the workflow's own token) — this is exactly why it failed on the very first real run, even though the image build/push itself succeeded. Fixed: that step now commits to `master` instead. First entry in `registry_manifest.json` was added by hand (digest confirmed by pulling the image directly) since CI didn't get to do it.
+- `gb_stable` being stale turned out not to matter in practice — the huge diff (many months of upstream ComfyUI history) merged without conflict.
 
 ### Soon — before touching the PowerShell script
 - [ ] Update `New-ComfyProject.ps1` (renamed from `Project_Start_06.ps1`) to read the image tag/digest from `registry_manifest.json` instead of the hardcoded `comfyui-studio:2025-01-15`
@@ -593,6 +643,7 @@ deploy:
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
 
 ### Later — operational improvements
+- [ ] Add basic reusable test workflows (simple txt2img, checkpoint load) to `Shared_Assets/workflows/` so build/image verification doesn't rely on improvising a test each time — pairs with `PROMOTION_CHECKLIST.md`'s "Basic txt2img workflow runs cleanly" item
 - [ ] Node allowlist/validation script — hash-check custom nodes before they run
 - [ ] Audit log in the PowerShell script
 - [ ] `promote-to-stable.ps1` helper — validates checklist is complete, opens PR via GitHub CLI (would need `gh` installed — not currently available locally)
