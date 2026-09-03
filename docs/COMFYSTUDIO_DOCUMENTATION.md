@@ -1,7 +1,7 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Automated logic verified; the interactive prompts (image selection, network security) still need a real-terminal confirmation.
-> **Last Updated:** September 2, 2026
+> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Both interactive prompts confirmed working in a real terminal, and both scripts' first real `docker compose up` surfaced and fixed a genuine air-gapped-mode bug — now resolved with a sidecar-proxy architecture, verified end-to-end against the real ComfyUI image.
+> **Last Updated:** September 3, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
 ---
@@ -328,6 +328,27 @@ D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\Comfy
 The original testing entry point created a full client-shaped project (slug, port auto-detect, `models/`/`custom_nodes/`/`input/`/`output/` isolation) every time an admin wanted to validate a build. That's solving the wrong problem: a test run isn't a job, doesn't need archival, and doesn't need private model storage — it's validating against `Shared_Assets`, the same thing every time. `Test-ComfyBuild.ps1` instead always targets one fixed `_testing\` folder, creating its (much lighter — just `workflows/` and `output/`) structure only if it doesn't exist yet, and always rewriting the compose file with whichever image gets selected. This also finally gives a real way to exercise the `PROMOTION_CHECKLIST.md` "air-gapped mode confirmed" item, which had been marked out-of-scope twice before for lack of a real compose-based environment to test it against — the sandbox keeps the same network Y/N prompt specifically for this reason.
 
 Port `8888` is permanently reserved for the sandbox — hardcoded into `New-ComfyProject.ps1`'s `Get-NextAvailablePort` as an always-excluded port, not just left to chance, so a real client project can never be auto-assigned it even if the sandbox container happens to be stopped at the moment.
+
+### Air-gapped mode — how it actually works (sidecar proxy)
+
+Both scripts' first-ever `docker compose up` (2026-09-03) surfaced a real, previously-undiscovered bug: the original single-service design put `internal: true` on the container's own network, and **Docker Desktop for Windows does not publish ports at all for any service on an `internal: true` network** — confirmed exhaustively (not just once): the actual sandbox container showed an empty port binding, a clean throwaway test reproduced it with an explicit `127.0.0.1` binding on a properly-named network, and even the documented native-Linux workaround (reaching the container's own bridge IP directly, bypassing published ports entirely) failed the same way here. Root cause, high confidence: Docker Desktop's real daemon runs inside a hidden WSL2/Hyper-V VM, and only *explicitly published* ports cross that VM boundary to actual Windows — the "host can reach the internal bridge" behavior the Docker docs describe is real, but only for native Linux dockerd, not this platform.
+
+**Fix — a sidecar reverse-proxy**, when air-gapped mode is selected:
+```
+comfyui-<project>        →  internal_net only, NO published port, all volumes/GPU/CLI_ARGS as normal
+<project>-proxy          →  alpine/socat, on BOTH internal_net and a plain proxy_net,
+                             published as 127.0.0.1:<port>:8188 (loopback only, never exposed to the LAN)
+                             command: TCP-LISTEN:8188,fork,reuseaddr TCP:comfyui-<project>:8188
+
+networks:
+  internal_net: { internal: true }
+  proxy_net: {}
+```
+`socat` is a pure byte-level TCP relay with zero HTTP awareness — it can't distinguish a websocket upgrade (which ComfyUI needs for live progress updates) from any other TCP traffic, so it doesn't need any special config for that. Only the proxy touches the network with a route out; the actual ComfyUI container (running untrusted custom-node code) never does. Verified end-to-end against the real ComfyUI image: `HTTP:200` serving actual ComfyUI content through the proxy, and the backend container's own outbound requests fail outright (`HTTP:000`).
+
+**This is understood to be a Docker-Desktop-for-Windows-specific workaround, not a universal requirement.** A future Linux-hosted deployment (e.g. a cloud EC2 instance running Docker Engine directly, no Desktop virtualization layer) would very likely not need the sidecar at all — plain `internal: true` should just work there, matching the documented native-Linux behavior. Don't assume the sidecar pattern is required if this pipeline ever runs somewhere other than Docker Desktop for Windows — re-verify first.
+
+Two other options were considered and explicitly rejected for now: Docker Desktop's Business-tier "air-gapped containers" feature (architecturally clean — outbound filtering happens via a Desktop-level proxy, no conflict with published ports at all — but requires a paid Business subscription, org-wide "Enforce sign-in," and centralized settings management, and appears to be a machine-wide policy rather than something scoped per-project, which doesn't fit needing some projects air-gapped and others internet-enabled side by side); and a DNS-blackhole approach (much simpler, but a materially weaker guarantee — doesn't stop something using a hardcoded IP instead of a hostname).
 
 ### `extra_model_paths.yaml` — a real bug found and fixed during GPU validation
 
@@ -676,17 +697,21 @@ deploy:
 - **Gotcha found:** a non-ASCII character (em-dash) inside a PowerShell string literal broke Windows PowerShell 5.1's parser outright (`The string is missing the terminator`), because the `.ps1` files have no UTF-8 BOM — without one, PowerShell 5.1 misreads multi-byte UTF-8 via the system codepage. Fix: keep PowerShell script content plain-ASCII; don't rely on BOM handling.
 - ~~Reserve a port for the testing sandbox so real jobs can never collide with it~~ — done: `8888` hardcoded as a permanently-excluded port in `New-ComfyProject.ps1`'s `Get-NextAvailablePort`, verified it's actually skipped even when nothing is currently listening on it.
 
+### Resolved in the first-real-launch session (2026-09-03)
+- ~~Confirm the interactive prompts behave correctly in a real terminal~~ — done, user confirmed both (image-selection menu, network Y/N) work
+- ~~Air-gapped mode is completely broken (unreachable, not just isolated)~~ — root-caused and fixed with the sidecar-proxy architecture; see "Air-gapped mode — how it actually works" above. Verified end-to-end against the real ComfyUI image.
+- ~~Network block placed inside the service instead of top-level~~ — a real Compose-YAML validation error, fixed in both scripts (`services.X.networks.default additional properties 'internal' not allowed`)
+- Port-detection regex only matched `0.0.0.0:` bindings — the air-gapped proxy binds to `127.0.0.1:` specifically, so `Get-NextAvailablePort` would have missed it. Fixed to match any host IP prefix.
+
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
 - [ ] Add `keys/` folder handling — project API keys should use Docker secrets or env var injection, not plaintext files
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
-- [ ] Confirm the interactive prompts (image selection, network security) behave correctly in a real terminal — only verified automatically so far, this tool can't exercise interactive input
 - [ ] Design (not yet built): a controlled way to update a locked project's image mid-job, since right now that means a manual `docker-compose.yml` edit with no tooling support
-- [ ] Add the basic reusable test workflows (still tracked from earlier) into `_testing\workflows\`, now that there's a real place for them to live
+- [ ] Add the basic reusable test workflows into `_testing\workflows\`, now that there's a real place for them to live
 
 ### Later — operational improvements
-- [ ] Add basic reusable test workflows (simple txt2img, checkpoint load) to `Shared_Assets/workflows/` so build/image verification doesn't rely on improvising a test each time — pairs with `PROMOTION_CHECKLIST.md`'s "Basic txt2img workflow runs cleanly" item
 - [ ] Node allowlist/validation script — hash-check custom nodes before they run
 - [ ] Audit log in the PowerShell script
 - [ ] `promote-to-stable.ps1` helper — validates checklist is complete, opens PR via GitHub CLI (would need `gh` installed — not currently available locally)
