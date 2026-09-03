@@ -1,6 +1,6 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Both interactive prompts confirmed working in a real terminal, and both scripts' first real `docker compose up` surfaced and fixed a genuine air-gapped-mode bug — now resolved with a sidecar-proxy architecture, verified end-to-end against the real ComfyUI image.
+> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Both interactive prompts confirmed working in a real terminal, and both scripts' first real `docker compose up` surfaced and fixed a genuine air-gapped-mode bug — now resolved with a sidecar-proxy architecture, verified end-to-end against the real ComfyUI image. All 5 vetted `Shared_Assets` custom nodes now import cleanly — their missing Python dependencies are baked into `requirements.lock`.
 > **Last Updated:** September 3, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
@@ -85,7 +85,9 @@ master (default branch)
 │       └── build-stable.yml        # Auto-builds on push to gb_stable — EXISTS
 ├── docker/
 │   ├── Dockerfile                  # Pinned base image, builds real Python 3.11 from source
-│   └── requirements.lock           # Hash-verified Python dependency lockfile
+│   ├── requirements.lock           # Hash-verified Python dependency lockfile (ComfyUI + custom nodes)
+│   └── custom_nodes_requirements.txt  # Shared_Assets custom node deps, fed into pip-compile
+│                                    # alongside requirements.txt - kept separate so upstream syncs don't touch it
 ├── registry_manifest.json          # APPROVED images only — EXISTS, has its first real entry
 └── PROMOTION_CHECKLIST.md          # EXISTS, filled in for the first promoted image
 
@@ -685,10 +687,12 @@ deploy:
 - ~~Confirm `Shared_Assets/custom_nodes` actually loads~~ — **confirmed working**, and confirmed thoroughly: `extra_model_paths.yaml`'s `custom_nodes` mapping causes ComfyUI to scan and attempt-load every package under `/shared_assets/custom_nodes`, not just run prestartup scripts. No change needed to `Project_Start_06.ps1`'s existing mount layout.
 - ~~`CLI_ARGS` environment variable did nothing at all~~ — the Dockerfile's `CMD` was a bare exec-form array, which never invokes a shell and therefore never expands `$CLI_ARGS`. Verified by running the container with `CLI_ARGS` unset vs. set to a real flag: byte-identical output either way. `extra_model_paths.yaml` only ever loaded via ComfyUI's own auto-detection of that filename at its default path, unrelated to any flag. Fixed to `CMD ["sh", "-c", "exec python3.11 main.py --listen 0.0.0.0 $CLI_ARGS"]` — the `exec` keeps `python3.11` as PID 1 (clean `docker stop` signal handling) while still letting `$CLI_ARGS` expand. Re-verified with `CLI_ARGS="--cpu ..."` actually taking effect.
 
-### Flagged for later — found during pre-script verification, not fixed yet
-- **3 of 5 `Shared_Assets/custom_nodes` packages fail to import**: `ComfyUI-Manager` (`No module named 'git'`), `comfyui_segment_anything` (`No module named 'segment_anything'`), `was-node-suite-comfyui` (`No module named 'numba'`). Root cause: each has its own `requirements.txt`, and the base image only ever installs ComfyUI's own `docker/requirements.lock` — nothing installs a mounted custom node's dependencies. Only `ComfyUI_IPAdapter_plus` and `rgthree-comfy` currently import cleanly. This is a real architectural decision, not a quick fix — the trade-off:
-  - **Bake known shared-node deps into `requirements.lock`** — matches the "pin everything" philosophy, but couples image versioning to custom-node curation (adding a vetted node means a new image build, not just dropping a folder into `Shared_Assets`)
-  - **Auto-install each node's `requirements.txt` at container startup** — more flexible, but runs arbitrary pip installs at runtime (cuts against the reproducibility/trust model this whole pipeline is built on, and wouldn't work in air-gapped mode at all)
+### Resolved (2026-09-03) — custom node dependency trade-off
+Was flagged as an open architectural decision: bake known shared-node deps into `requirements.lock` (pin-everything philosophy, but couples image versioning to node curation) vs. auto-install each node's `requirements.txt` at container startup (more flexible, but runs arbitrary pip installs at runtime). **The air-gapped work settled it**: an air-gapped container has zero outbound access, so runtime pip installs literally cannot work there — auto-install is incompatible with a feature this pipeline now genuinely relies on. Went with baking deps into the image.
+
+`docker/custom_nodes_requirements.txt` (new file, kept separate from `requirements.txt` so upstream ComfyUI syncs don't touch it) lists each of the 3 previously-broken nodes' real dependencies — `ComfyUI-Manager`, `comfyui_segment_anything`, `was-node-suite-comfyui` — fed into `pip-compile` alongside `requirements.txt`. Excludes `was-node-suite-comfyui`'s 3 `git+https://` (VCS) dependencies (`img2texture`, `cstr`, `ffmpy`) — pip's `--require-hashes` mode forbids VCS requirements entirely, and this pipeline never installs anything without hash verification.
+
+**Verified: all 5 nodes now import cleanly**, including `was-node-suite-comfyui` without its 3 excluded VCS deps — turns out they're only needed by specific optional sub-features, not required at top-level import. Shipped through the real pipeline (built locally, tested, committed, pushed to `gb_testing`, CI build succeeded).
 
 ### Resolved in the PowerShell rework session (still 2026-09-02)
 - ~~Update `New-ComfyProject.ps1` to read the manifest~~ — done
