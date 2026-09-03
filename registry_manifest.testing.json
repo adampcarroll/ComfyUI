@@ -55,6 +55,13 @@
       "comfyui_commit": "358ae06f2980c62e34e2148f20faf4d20c3997f4",
       "built_date": "2026-09-03",
       "branch": "gb_testing"
+    },
+    {
+      "tag": "f282a9d",
+      "digest": "sha256:7541c866b2a5a82d49fc8c36781f325d261956dca14bdcb9aea07745583daddb",
+      "comfyui_commit": "f282a9d33a496b0eb5ddaec0fc7e7305e9b8df58",
+      "built_date": "2026-09-03",
+      "branch": "gb_testing"
     }
   ]
 }
