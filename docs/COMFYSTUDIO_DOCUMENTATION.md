@@ -1,6 +1,6 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — The full pipeline is now proven end-to-end for the first time: testing build → manual GPU validation → promotion PR → stable build → approved manifest entry. Remaining major piece: `New-ComfyProject.ps1` still doesn't read from the registry manifest at all (hardcoded local image tag).
+> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry), and `New-ComfyProject.ps1` has been rebuilt to actually read the manifest and pin by digest. Automated logic verified; the two interactive prompts (image selection, network security) still need a real-terminal confirmation.
 > **Last Updated:** September 2, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
@@ -298,13 +298,13 @@ D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\Comfy
 │   │   ├── loras\, vae\, controlnet\, text_encoders\, diffusion_models\, model_patches\
 │   │   └── LLM\                    # non-standard — registered by a specific custom node, not base ComfyUI
 │   └── workflows\
-├── Project_Start_04.ps1            # older iteration
-├── Project_Start_05.ps1            # older iteration
-├── Project_Start_06.ps1            # CURRENT active script — still hardcoded to a local
-│                                    # image tag (comfyui-studio:2025-01-15), does NOT
-│                                    # yet read registry_manifest.json. Rename/evolve to
-│                                    # New-ComfyProject.ps1 once the manifest read is wired up.
-├── .archive\                       # old script iterations (new_client.ps1, Project_Start_01-03.ps1)
+├── ComfyProject.Core.ps1           # shared logic: manifest read (via `git show`), image
+│                                    # selection, folder/network/port setup, compose generation
+├── New-ComfyProject.ps1            # artist-facing entry point — always reads the APPROVED
+│                                    # master:registry_manifest.json, pins image by digest
+├── New-ComfyProject-Testing.ps1    # ADMIN-ONLY entry point — reads the UNAPPROVED
+│                                    # gb_testing:registry_manifest.testing.json instead
+├── .archive\                       # old script iterations (new_client.ps1, Project_Start_01-06.ps1)
 ├── docker\                         # local scratch copy, not the source of truth (that's the git repo)
 └── [per-client project folders, created by the script]
 ```
@@ -416,12 +416,9 @@ Not yet re-verified from a second (artist-like) machine this session — only co
 Deferred — staying on `D:\ai\ComfyStudio` until the pipeline is fully proven (explicit decision, see Section 3).
 
 ### Step 8 — Configure the PowerShell Script
-Not done yet. `Project_Start_06.ps1` still hardcodes:
-```powershell
-$BaseStudioPath = "D:/ai/ComfyStudio"
-$DockerImage = "comfyui-studio:2025-01-15"
-```
-It needs to be updated to read the image tag/digest from `registry_manifest.json` (the stable manifest) instead. See Section 10 for the planned script structure (core module + thin entry points, one for artists reading only the stable manifest, one admin-only for testing).
+Done. `Project_Start_06.ps1` (hardcoded to `comfyui-studio:2025-01-15`) has been replaced by `ComfyProject.Core.ps1` + two thin entry points, per the planned core+entry-points design. The core script reads whichever manifest it's told to via `git show <branch>:<file>` (works regardless of which branch is checked out locally) and pins the generated `docker-compose.yml` to the image **by digest**, never a mutable tag. `New-ComfyProject.ps1` (stable) and `New-ComfyProject-Testing.ps1` (admin-only, unapproved images) are both real files now — old `Project_Start_04/05/06.ps1` moved to `.archive/`.
+
+Verified automatically: manifest reading, image listing, default-to-newest selection, digest-pinned compose generation, folder/README creation, port auto-detection. **Still needs a real-terminal confirmation** of the two interactive prompts (image-number selection, network security Y/N) — this tool's non-interactive environment can't exercise those.
 
 ---
 
@@ -458,23 +455,30 @@ docker compose up -d
 
 ## 7. Daily Operations — Starting a Project
 
-Still describes the target workflow — `New-ComfyProject.ps1` (renamed from `Project_Start_06.ps1`) has not been rewired to the registry manifest yet, so this isn't fully live.
+Live now, per the actual rebuilt script (see Section 5 Step 8).
 
 ### Creating a New Project (Admin or Lead)
 
 ```powershell
+cd D:\ai\ComfyStudio
 .\New-ComfyProject.ps1 -ClientName "Acme Corp Spot"
 ```
 
-Planned behavior (current `Project_Start_06.ps1` already does most of this, minus the manifest read):
-1. Sanitize the client name into a URL-safe slug (`acme-corp-spot`)
-2. Prompt whether to enable internet access (default: No / air-gapped)
-3. Auto-detect the next available port
-4. Create the full folder structure under `Projects/`
-5. Select the Docker image version from `registry_manifest.json` (not yet wired up — currently hardcoded)
-6. Write a pinned `docker-compose.yml` for that project
-7. Write a `PROJECT_README.txt` with port and security status
-8. Copy the compose content to clipboard
+For admins validating a testing build before promotion (not for real client work):
+```powershell
+.\New-ComfyProject-Testing.ps1 -ClientName "Internal Validation Run"
+```
+
+Actual behavior:
+1. Reads the manifest (`master:registry_manifest.json` for the artist-facing script, `gb_testing:registry_manifest.testing.json` for the testing one) via `git show`
+2. Lists available images, prompts which one to use (default: newest)
+3. Sanitizes the client name into a URL-safe slug (`acme-corp-spot`)
+4. Prompts whether to enable internet access (default: No / air-gapped)
+5. Auto-detects the next available port
+6. Creates the full folder structure under `D:\ai\ComfyStudio\<slug>\`
+7. Writes a `docker-compose.yml` pinned to the selected image **by digest** (never a mutable tag)
+8. Writes a `PROJECT_README.txt` with port, security status, image, and manifest source
+9. Copies the compose content to clipboard
 
 ### Launching / Stopping / Archiving / Relaunching a Project
 Unchanged from original design — see Appendix for the exact commands.
@@ -632,13 +636,17 @@ deploy:
   - **Bake known shared-node deps into `requirements.lock`** — matches the "pin everything" philosophy, but couples image versioning to custom-node curation (adding a vetted node means a new image build, not just dropping a folder into `Shared_Assets`)
   - **Auto-install each node's `requirements.txt` at container startup** — more flexible, but runs arbitrary pip installs at runtime (cuts against the reproducibility/trust model this whole pipeline is built on, and wouldn't work in air-gapped mode at all)
 
-### Soon — before touching the PowerShell script
-- [ ] Update `New-ComfyProject.ps1` (renamed from `Project_Start_06.ps1`) to read the image tag/digest from `registry_manifest.json` instead of the hardcoded `comfyui-studio:2025-01-15`
-- [ ] Design agreed but not built: a shared core script/function (e.g. `ComfyProject.Core.ps1`) parameterized by which manifest to read, with two thin entry points — `New-ComfyProject.ps1` (artist-facing, stable manifest only) and an admin-only testing variant (calls the same core with the testing manifest). Note: hiding the testing script by not documenting it is obscurity, not real access control, unless it's also placed somewhere with actual restricted permissions.
+### Resolved in the PowerShell rework session (still 2026-09-02)
+- ~~Update `New-ComfyProject.ps1` to read the manifest~~ — done, per the core+entry-points design
+- ~~Build the core+entry-points script structure~~ — done: `ComfyProject.Core.ps1` + `New-ComfyProject.ps1` (stable) + `New-ComfyProject-Testing.ps1` (admin-only, testing manifest). Reminder still applies: placing the testing script in the same visible folder is organizational clarity, not real access control.
+- **New gotcha found:** a non-ASCII character (em-dash) inside a PowerShell string literal broke Windows PowerShell 5.1's parser outright (`The string is missing the terminator`), because the `.ps1` files have no UTF-8 BOM — without one, PowerShell 5.1 misreads multi-byte UTF-8 via the system codepage. Fix: keep PowerShell script content plain-ASCII; don't rely on BOM handling.
+
+### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in the script
 - [ ] Add CPU/RAM resource limits to the compose template
 - [ ] Add `keys/` folder handling — project API keys should use Docker secrets or env var injection, not plaintext files
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
+- [ ] Confirm the two interactive prompts (image selection, network security) behave correctly in a real terminal — only verified automatically so far, this tool can't exercise interactive input
 
 ### Later — operational improvements
 - [ ] Add basic reusable test workflows (simple txt2img, checkpoint load) to `Shared_Assets/workflows/` so build/image verification doesn't rely on improvising a test each time — pairs with `PROMOTION_CHECKLIST.md`'s "Basic txt2img workflow runs cleanly" item
