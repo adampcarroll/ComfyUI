@@ -697,6 +697,28 @@ deploy:
 ### Architecture decisions pending
 - [ ] AMD GPU support — currently NVIDIA only
 - [ ] Whether `New-ComfyProject.ps1` should ever be able to point at a testing image at all, vs. admins validating testing builds entirely outside the project-creation script
+- [ ] Portainer for container/stack management — a stated goal from the original design doc, not pursued yet, may or may not happen. If it does: the original doc flagged a real prior bug where port auto-detection was unreliable specifically when stacks were deployed *through Portainer* (`Bind for 0.0.0.0:8188 failed: port is already allocated`) — our current port-detection only checks `docker ps` + OS-level sockets, not anything Portainer-specific, so this would need re-verifying before relying on Portainer for deployment.
+
+### Future features (approved to track, not yet built)
+
+**Archival / freeze / restore.** A project may go inactive for six months or longer and later need restoring with the *exact* runtime it used. GHCR alone isn't a sufficient permanent archive (images can be pruned, account issues, etc.) — the more robust pattern is `docker save`/`docker load` to a portable `.tar`, captured at an explicit freeze step, alongside the project's config and assets. Envisioned shape (from the original design doc, not yet built):
+- `archive_project.ps1` — stops the project, exports its exact image (`docker save`) to a `.tar`, captures `docker-compose.yml` + `extra_model_paths.yaml`, preserves project-specific custom nodes / trained LoRAs / training assets, snapshots whichever shared models the project actually depends on (so restore doesn't depend on the current state of `Shared_Assets`), and writes metadata (project, date, image tag/digest, ComfyUI commit, model dependencies).
+- `restore_project.ps1` — `docker load`s the archived image and recreates the environment from the captured config.
+- Guiding principle either script should honor: build once → test → tag → use → **archive the exact image**, never "we can rebuild it identically from git later" (dependency drift, base-image changes, and disappearing upstream packages all make a rebuild non-identical).
+
+**Client-specific LoRA / training folder structure.** `New-ComfyProject.ps1` currently creates `models/loras` per project, not a distinct `loras/trained` — and has no `training/` folder at all. The original design called for:
+```
+<Project>\
+├── loras\trained\          # mounted to /app/ComfyUI/models/loras
+└── training\
+    ├── source_images\
+    ├── captions\
+    ├── configs\
+    └── outputs\
+```
+Rationale: a client's trained LoRA and the training data behind it should stay project-scoped (never in `Shared_Assets`) and travel together into that project's archive — a future client shouldn't be able to see another client's training images or LoRAs.
+
+**Multi-provider / API-based generation.** The studio wants the ability to use external API-based image/video generation (e.g. Google's models, "Nano Banana") *alongside* local checkpoints, without redesigning the pipeline around any one provider. Implies: architecture should stay provider-agnostic (not build anything that assumes "every generation is a local model"), and API credentials need real secrets handling — ties directly into the still-open `keys/` folder → Docker secrets item above, since API keys can't be plaintext files in a project folder.
 
 ---
 
