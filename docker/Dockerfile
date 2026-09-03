@@ -40,6 +40,17 @@ RUN curl -fsSL -o /tmp/python.tgz https://www.python.org/ftp/python/${PYTHON_VER
     && make altinstall \
     && cd / && rm -rf /tmp/python.tgz /tmp/Python-${PYTHON_VERSION}
 
+# gosu: lets the container start as root just long enough to fix bind-mount
+# ownership (see docker/entrypoint.sh), then drop cleanly to comfyuser for
+# the actual application - pinned by version + a checksum computed from the
+# downloaded bytes, same trust model as everything else pinned in this file.
+ARG GOSU_VERSION=1.19
+ARG GOSU_SHA256=52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0
+
+RUN curl -fsSL -o /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-amd64" \
+    && echo "${GOSU_SHA256}  /usr/local/bin/gosu" | sha256sum -c - \
+    && chmod +x /usr/local/bin/gosu
+
 WORKDIR /app/ComfyUI
 
 # Copy code from Actions checkout instead of cloning
@@ -49,15 +60,16 @@ COPY . .
 COPY docker/requirements.lock .
 RUN python3.11 -m pip install --require-hashes -r requirements.lock
 
-# Non-root user
+# Non-root user - the image itself is fully comfyuser-owned, but the
+# container still starts as root (no USER directive here) so the entrypoint
+# can fix up any bind-mount directories Docker created as root before
+# dropping to comfyuser. See docker/entrypoint.sh for why this is needed and
+# why it doesn't weaken the non-root security posture (gosu replaces itself
+# with the comfyuser process - the root moment is only ever a chown).
 RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
-USER comfyuser
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8188
-# Explicit sh -c (not a bare exec-form array) so $CLI_ARGS actually expands —
-# a plain exec-form CMD never invokes a shell, so an env var set via
-# docker-compose would silently be ignored no matter what it's set to.
-# `exec` inside the shell replaces it with the python process (PID 1), so
-# SIGTERM from `docker stop` reaches python directly instead of the
-# container hanging until the stop timeout.
-CMD ["sh", "-c", "exec python3.11 main.py --listen 0.0.0.0 $CLI_ARGS"]
+ENTRYPOINT ["/entrypoint.sh"]
