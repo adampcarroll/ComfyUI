@@ -1,6 +1,6 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry), and `New-ComfyProject.ps1` has been rebuilt to actually read the manifest and pin by digest. Automated logic verified; the two interactive prompts (image selection, network security) still need a real-terminal confirmation.
+> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Automated logic verified; the interactive prompts (image selection, network security) still need a real-terminal confirmation.
 > **Last Updated:** September 2, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
@@ -298,16 +298,36 @@ D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\Comfy
 │   │   ├── loras\, vae\, controlnet\, text_encoders\, diffusion_models\, model_patches\
 │   │   └── LLM\                    # non-standard — registered by a specific custom node, not base ComfyUI
 │   └── workflows\
-├── ComfyProject.Core.ps1           # shared logic: manifest read (via `git show`), image
-│                                    # selection, folder/network/port setup, compose generation
-├── New-ComfyProject.ps1            # artist-facing entry point — always reads the APPROVED
-│                                    # master:registry_manifest.json, pins image by digest
-├── New-ComfyProject-Testing.ps1    # ADMIN-ONLY entry point — reads the UNAPPROVED
-│                                    # gb_testing:registry_manifest.testing.json instead
-├── .archive\                       # old script iterations (new_client.ps1, Project_Start_01-06.ps1)
+├── Select-ComfyImage.ps1           # shared helper: read a manifest (via `git show`), list
+│                                    # images, prompt for one, return the digest-pinned image.
+│                                    # The one piece of logic genuinely identical between
+│                                    # New-ComfyProject.ps1 and Test-ComfyBuild.ps1.
+├── New-ComfyProject.ps1            # REAL CLIENT JOBS. Run once per job — reads the APPROVED
+│                                    # master:registry_manifest.json, pins image by digest,
+│                                    # creates a full per-client project folder. Afterward,
+│                                    # artists just `docker compose up` in that folder — the
+│                                    # image is locked for the job (no automated update path yet).
+├── Test-ComfyBuild.ps1             # ADMIN-ONLY. Reads the UNAPPROVED
+│                                    # gb_testing:registry_manifest.testing.json. NOT a
+│                                    # per-run disposable project — always targets the single
+│                                    # fixed _testing\ sandbox below, idempotently.
+├── _testing\                       # the reusable sandbox Test-ComfyBuild.ps1 manages.
+│   ├── workflows\                  # drop known-good test workflows here to reuse across runs
+│   ├── output\
+│   ├── docker-compose.yml          # always overwritten with whichever image was last selected
+│   └── SANDBOX_STATUS.txt          # not a PROJECT_README — this isn't a client project
+├── .archive\                       # old iterations: new_client.ps1, Project_Start_01-06.ps1,
+│                                    # ComfyProject.Core.ps1, New-ComfyProject-Testing.ps1
+│                                    # (both superseded by the redesign above)
 ├── docker\                         # local scratch copy, not the source of truth (that's the git repo)
-└── [per-client project folders, created by the script]
+└── [per-client project folders, created by New-ComfyProject.ps1]
 ```
+
+### Why a persistent sandbox, not disposable per-run test projects
+
+The original testing entry point created a full client-shaped project (slug, port auto-detect, `models/`/`custom_nodes/`/`input/`/`output/` isolation) every time an admin wanted to validate a build. That's solving the wrong problem: a test run isn't a job, doesn't need archival, and doesn't need private model storage — it's validating against `Shared_Assets`, the same thing every time. `Test-ComfyBuild.ps1` instead always targets one fixed `_testing\` folder, creating its (much lighter — just `workflows/` and `output/`) structure only if it doesn't exist yet, and always rewriting the compose file with whichever image gets selected. This also finally gives a real way to exercise the `PROMOTION_CHECKLIST.md` "air-gapped mode confirmed" item, which had been marked out-of-scope twice before for lack of a real compose-based environment to test it against — the sandbox keeps the same network Y/N prompt specifically for this reason.
+
+Port `8888` is permanently reserved for the sandbox — hardcoded into `New-ComfyProject.ps1`'s `Get-NextAvailablePort` as an always-excluded port, not just left to chance, so a real client project can never be auto-assigned it even if the sandbox container happens to be stopped at the moment.
 
 ### `extra_model_paths.yaml` — a real bug found and fixed during GPU validation
 
@@ -416,9 +436,9 @@ Not yet re-verified from a second (artist-like) machine this session — only co
 Deferred — staying on `D:\ai\ComfyStudio` until the pipeline is fully proven (explicit decision, see Section 3).
 
 ### Step 8 — Configure the PowerShell Script
-Done. `Project_Start_06.ps1` (hardcoded to `comfyui-studio:2025-01-15`) has been replaced by `ComfyProject.Core.ps1` + two thin entry points, per the planned core+entry-points design. The core script reads whichever manifest it's told to via `git show <branch>:<file>` (works regardless of which branch is checked out locally) and pins the generated `docker-compose.yml` to the image **by digest**, never a mutable tag. `New-ComfyProject.ps1` (stable) and `New-ComfyProject-Testing.ps1` (admin-only, unapproved images) are both real files now — old `Project_Start_04/05/06.ps1` moved to `.archive/`.
+Done, and redesigned once from the first pass. `Project_Start_06.ps1` (hardcoded to `comfyui-studio:2025-01-15`) is fully replaced by three files: `Select-ComfyImage.ps1` (shared manifest-read/image-selection helper), `New-ComfyProject.ps1` (real client jobs — full per-project folder, port auto-detection, pins by digest), and `Test-ComfyBuild.ps1` (a single reusable admin sandbox, not disposable per-run projects — see Section 3's "why a persistent sandbox" note). All manifest reads go through `git show <branch>:<file>`, which works regardless of which branch is checked out locally. Old `Project_Start_04/05/06.ps1` and the first-pass `ComfyProject.Core.ps1`/`New-ComfyProject-Testing.ps1` are all in `.archive/`.
 
-Verified automatically: manifest reading, image listing, default-to-newest selection, digest-pinned compose generation, folder/README creation, port auto-detection. **Still needs a real-terminal confirmation** of the two interactive prompts (image-number selection, network security Y/N) — this tool's non-interactive environment can't exercise those.
+Verified automatically (this tool's non-interactive environment can exercise everything except the prompts themselves): manifest reading, image listing, default-to-newest selection, digest-pinned compose generation, folder/README creation, port auto-detection (including confirming the reserved `8888` port is genuinely skipped, and that a real running container correctly gets detected and avoided), and `Test-ComfyBuild.ps1`'s idempotent folder creation (verified a second run does not recreate existing folders). **Still needs a real-terminal confirmation** of the interactive prompts (image-number selection, network security Y/N).
 
 ---
 
@@ -457,27 +477,40 @@ docker compose up -d
 
 Live now, per the actual rebuilt script (see Section 5 Step 8).
 
-### Creating a New Project (Admin or Lead)
+### Creating a New Project (Admin or Lead) — run once per job
 
 ```powershell
 cd D:\ai\ComfyStudio
 .\New-ComfyProject.ps1 -ClientName "Acme Corp Spot"
 ```
 
-For admins validating a testing build before promotion (not for real client work):
-```powershell
-.\New-ComfyProject-Testing.ps1 -ClientName "Internal Validation Run"
-```
-
 Actual behavior:
-1. Reads the manifest (`master:registry_manifest.json` for the artist-facing script, `gb_testing:registry_manifest.testing.json` for the testing one) via `git show`
+1. Reads `master:registry_manifest.json` via `git show` (through the shared `Select-ComfyImage.ps1` helper)
 2. Lists available images, prompts which one to use (default: newest)
 3. Sanitizes the client name into a URL-safe slug (`acme-corp-spot`)
 4. Prompts whether to enable internet access (default: No / air-gapped)
-5. Auto-detects the next available port
+5. Auto-detects the next available port — permanently skipping `8888` (reserved for the testing sandbox), even if the sandbox container isn't currently running
 6. Creates the full folder structure under `D:\ai\ComfyStudio\<slug>\`
 7. Writes a `docker-compose.yml` pinned to the selected image **by digest** (never a mutable tag)
 8. Writes a `PROJECT_README.txt` with port, security status, image, and manifest source
+
+**After this, the image is locked for the job.** Artists just `docker compose up` in that project's folder going forward — this script never runs again for that project. There's no automated way to bump a locked project to a newer image yet; that would mean re-running against a newer manifest entry and hand-editing the existing `docker-compose.yml`.
+
+### Validating a Build Before Promotion (Admin-only)
+
+```powershell
+cd D:\ai\ComfyStudio
+.\Test-ComfyBuild.ps1
+```
+
+Not a project — no client name, no per-run folder. Always targets the single, reusable `_testing\` sandbox:
+1. Reads `gb_testing:registry_manifest.testing.json`, prompts which image to validate (default: newest)
+2. Prompts network access — this is what actually exercises `PROMOTION_CHECKLIST.md`'s air-gapped item
+3. Creates `_testing\workflows\` and `_testing\output\` only if they don't already exist (idempotent — re-running doesn't wipe anything you've dropped in there)
+4. Always overwrites `_testing\docker-compose.yml` and `_testing\SANDBOX_STATUS.txt` with the newly-selected image
+5. Fixed port `8888`
+
+Then `cd D:\ai\ComfyStudio\_testing; docker compose up -d` to actually launch it.
 9. Copies the compose content to clipboard
 
 ### Launching / Stopping / Archiving / Relaunching a Project
@@ -637,16 +670,20 @@ deploy:
   - **Auto-install each node's `requirements.txt` at container startup** — more flexible, but runs arbitrary pip installs at runtime (cuts against the reproducibility/trust model this whole pipeline is built on, and wouldn't work in air-gapped mode at all)
 
 ### Resolved in the PowerShell rework session (still 2026-09-02)
-- ~~Update `New-ComfyProject.ps1` to read the manifest~~ — done, per the core+entry-points design
-- ~~Build the core+entry-points script structure~~ — done: `ComfyProject.Core.ps1` + `New-ComfyProject.ps1` (stable) + `New-ComfyProject-Testing.ps1` (admin-only, testing manifest). Reminder still applies: placing the testing script in the same visible folder is organizational clarity, not real access control.
-- **New gotcha found:** a non-ASCII character (em-dash) inside a PowerShell string literal broke Windows PowerShell 5.1's parser outright (`The string is missing the terminator`), because the `.ps1` files have no UTF-8 BOM — without one, PowerShell 5.1 misreads multi-byte UTF-8 via the system codepage. Fix: keep PowerShell script content plain-ASCII; don't rely on BOM handling.
+- ~~Update `New-ComfyProject.ps1` to read the manifest~~ — done
+- ~~Build the core+entry-points script structure~~ — first pass done (`ComfyProject.Core.ps1` + `New-ComfyProject.ps1` + `New-ComfyProject-Testing.ps1`)
+- **Redesigned after further discussion, same day:** the first-pass testing script created a full disposable client-shaped project on every run, which didn't match its actual purpose (validating a build, not doing job work). Replaced with `Select-ComfyImage.ps1` (small shared helper) + `Test-ComfyBuild.ps1`, a single reusable idempotent sandbox — see Section 3's "why a persistent sandbox" note. First-pass files moved to `.archive/`. Reminder still applies: placing the admin script in the same visible folder is organizational clarity, not real access control.
+- **Gotcha found:** a non-ASCII character (em-dash) inside a PowerShell string literal broke Windows PowerShell 5.1's parser outright (`The string is missing the terminator`), because the `.ps1` files have no UTF-8 BOM — without one, PowerShell 5.1 misreads multi-byte UTF-8 via the system codepage. Fix: keep PowerShell script content plain-ASCII; don't rely on BOM handling.
+- ~~Reserve a port for the testing sandbox so real jobs can never collide with it~~ — done: `8888` hardcoded as a permanently-excluded port in `New-ComfyProject.ps1`'s `Get-NextAvailablePort`, verified it's actually skipped even when nothing is currently listening on it.
 
 ### Soon — still open
-- [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in the script
+- [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
 - [ ] Add `keys/` folder handling — project API keys should use Docker secrets or env var injection, not plaintext files
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
-- [ ] Confirm the two interactive prompts (image selection, network security) behave correctly in a real terminal — only verified automatically so far, this tool can't exercise interactive input
+- [ ] Confirm the interactive prompts (image selection, network security) behave correctly in a real terminal — only verified automatically so far, this tool can't exercise interactive input
+- [ ] Design (not yet built): a controlled way to update a locked project's image mid-job, since right now that means a manual `docker-compose.yml` edit with no tooling support
+- [ ] Add the basic reusable test workflows (still tracked from earlier) into `_testing\workflows\`, now that there's a real place for them to live
 
 ### Later — operational improvements
 - [ ] Add basic reusable test workflows (simple txt2img, checkpoint load) to `Shared_Assets/workflows/` so build/image verification doesn't rely on improvising a test each time — pairs with `PROMOTION_CHECKLIST.md`'s "Basic txt2img workflow runs cleanly" item
