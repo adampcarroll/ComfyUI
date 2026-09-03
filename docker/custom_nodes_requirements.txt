@@ -1,0 +1,47 @@
+# Dependencies for Shared_Assets/custom_nodes packages that aren't part of
+# ComfyUI's own requirements.txt. Kept separate from requirements.txt itself
+# so upstream syncs don't touch this, and so it's clear why these are here.
+#
+# Sourced from each node's own requirements.txt as of 2026-09-03:
+# ComfyUI-Manager, comfyui_segment_anything, was-node-suite-comfyui.
+#
+# NOT included: was-node-suite-comfyui's three git+https:// (VCS) deps
+# (img2texture, cstr, ffmpy) - pip's --require-hashes mode forbids VCS
+# requirements entirely, hash or no hash, and this pipeline never installs
+# anything without hash verification. Whatever WAS Node Suite features need
+# those specifically may still be unavailable - to be confirmed.
+
+# ComfyUI-Manager
+GitPython
+PyGithub
+matrix-nio
+huggingface-hub
+typer
+rich
+typing-extensions
+toml
+uv
+chardet
+
+# comfyui_segment_anything
+segment_anything
+addict
+yapf
+
+# was-node-suite-comfyui (minus the 3 VCS-only deps - see note above)
+cmake
+fairscale>=0.4.4
+imageio
+joblib
+matplotlib
+numba
+opencv-python-headless[ffmpeg]
+pilgram
+rembg
+scikit-image>=0.20.0
+scikit-learn
+
+# shared across multiple nodes above (transformers: Manager + WAS;
+# timm: segment_anything + WAS) - listed once, pip-compile dedupes
+transformers
+timm>=0.4.12
