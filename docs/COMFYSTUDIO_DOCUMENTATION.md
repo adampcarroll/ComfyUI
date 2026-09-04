@@ -793,6 +793,14 @@ Rationale: a client's trained LoRA and the training data behind it should stay p
 
 **Multi-provider / API-based generation.** The studio wants the ability to use external API-based image/video generation (e.g. Google's models, "Nano Banana") *alongside* local checkpoints, without redesigning the pipeline around any one provider. Implies: architecture should stay provider-agnostic (not build anything that assumes "every generation is a local model"), and API credentials need real secrets handling — ties directly into the still-open `keys/` folder → Docker secrets item above, since API keys can't be plaintext files in a project folder.
 
+**AYON integration.** The studio uses AYON for pipeline/production tracking and wants ComfyUI projects to hook into it (per [AYON's ComfyUI setup guide](https://help.ayon.app/articles/6794401-ayon-comfyui-setup-guide), reviewed 2026-09-04). Maps onto this architecture more cleanly than most integrations would:
+- AYON's "remote profile" mode is exactly this project's shape already — AYON just connects to an already-running ComfyUI server by URL, which is what every project container is (no need for AYON's "local profile" / venv-management path at all, since ComfyStudio never lets AYON launch ComfyUI itself).
+- The only thing a container needs is AYON's `ayon_menu` plugin (from `ayon-comfyui/client/_comfyui_plugin/ayon_menu`) dropped into `custom_nodes/` — a normal custom node, so it slots directly into the existing `_templates\custom_nodes\` mechanism (copied into every new project at creation, no architecture change needed there).
+- **Wrinkle 1 — a second port.** `ayon_menu` runs its own heartbeat port (default `55055`, configurable in `ayon_menu/consts.py`) alongside ComfyUI's own port. `New-ComfyProject.ps1`'s port allocation currently only reserves/tracks one port per project — would need to reserve and publish a pair per project instead.
+- **Wrinkle 2 — air-gap interacts badly with AYON's own network needs.** AYON's plugin talks outbound to the studio's AYON server for pipeline data, but this project's air-gapped mode is all-or-nothing (the sidecar proxy blocks *everything* outbound). If the AYON server lives on the local studio network rather than the public internet, air-gapped projects would need to allow that one host through while still blocking the internet — a step up from the current binary internal/plain toggle.
+
+Neither wrinkle is a blocker, both are known shapes of problem to solve when this gets built, not now.
+
 ---
 
 ## 11. Reference — Key Decisions & Rationale
