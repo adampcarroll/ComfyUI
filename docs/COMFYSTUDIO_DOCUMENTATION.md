@@ -764,6 +764,8 @@ After the CRLF fix above, updates still didn't stick. Real second cause: modern 
 
 **Fixed properly in `docker/entrypoint.sh`:** added `git config --system --add safe.directory '*'`, run as root before dropping to `comfyuser` — trusts every directory for every user, globally, at every container start. Same root-cause family as the earlier `/app/ComfyUI/user` ownership bug (a Windows bind-mount ownership mismatch inside the container) — these two fixes are companions, not substitutes. Shipped through the real pipeline (`master` → `gb_testing` → CI build).
 
+One more layer surfaced after both fixes landed: the Custom Nodes Manager panel still showed "version: unknown, try update" for every node. This turned out to be neither bug recurring — it's Manager's own classification for any node installed by cloning a project's default branch rather than through its CNR/tagged-release install flow (internally `'nightly'`, rendered as a blank "unknown" in the simpler UI). Confirmed via Manager's own live API (`/customnode/getlist`) that several completely unrelated, never-installed registry packages show the identical `nightly` state for the same reason (their upstream doesn't publish tagged releases) — proof this is generic, expected behavior, not specific to our pipeline. It resolved further on its own once Manager's async ComfyRegistry cache finished warming up, then showing richer labels like "Nightly 3.0.1" — no code change needed for that part.
+
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
