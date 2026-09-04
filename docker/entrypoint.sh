@@ -15,6 +15,12 @@ set -e
 # non-root image that also needs bind mounts (the same thing official images
 # like postgres do) - the brief root moment here only ever runs a chown, it
 # never touches the application itself.
-chown -R comfyuser:comfyuser /app/ComfyUI/user
+#
+# Tolerate failures here: some projects/the sandbox also mount a read-only
+# folder nested under /app/ComfyUI/user/ (e.g. a live, read-only view of a
+# shared templates collection) - chown can't touch that, and must not abort
+# the whole script over it (this script has `set -e`, so a plain failing
+# chown would silently prevent ComfyUI from ever starting at all).
+chown -R comfyuser:comfyuser /app/ComfyUI/user 2>/dev/null || true
 
 exec gosu comfyuser python3.11 main.py --listen 0.0.0.0 $CLI_ARGS
