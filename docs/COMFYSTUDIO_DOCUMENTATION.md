@@ -1,7 +1,7 @@
 # ComfyStudio — Setup, Operations & Handoff Documentation
 
-> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). Project creation is rebuilt around a small shared `Select-ComfyImage.ps1` helper, `New-ComfyProject.ps1` (real client jobs, pins by digest, runs once per job) and `Test-ComfyBuild.ps1` (a single reusable admin sandbox — not disposable per-run projects — for validating a build before promotion). Both interactive prompts confirmed working in a real terminal, and both scripts' first real `docker compose up` surfaced and fixed a genuine air-gapped-mode bug — now resolved with a sidecar-proxy architecture, verified end-to-end against the real ComfyUI image. All 5 vetted `Shared_Assets` custom nodes now import cleanly — their missing Python dependencies are baked into `requirements.lock`.
-> **Last Updated:** September 3, 2026
+> **Status:** In Progress — Full pipeline proven end-to-end (testing build → manual GPU validation → promotion PR → stable build → approved manifest entry). `New-ComfyProject.ps1` (real client jobs) and `Test-ComfyBuild.ps1` (reusable admin sandbox) both confirmed working in a real terminal, including a fixed air-gapped-mode bug (sidecar-proxy architecture) and a fixed `/app/ComfyUI/user` ownership bug (root vs. `comfyuser`). All 5 vetted custom nodes import cleanly (missing deps baked into `requirements.lock`). **Custom nodes and workflows moved out of `Shared_Assets`** into a new `_templates\` collection — `Shared_Assets` is models-only now; `_templates\custom_nodes`/`_templates\workflows` get copied into each new project at creation (one-time, then fully independent per project), while `Test-ComfyBuild.ps1` keeps reading `_templates` live for validation.
+> **Last Updated:** September 4, 2026
 > **Purpose:** Secure, reproducible, multi-user ComfyUI deployment for a VFX/animation studio using Docker, GitHub, GHCR, and (eventually) LucidLink
 
 ---
@@ -291,15 +291,19 @@ It has now run once, on the first-ever merged promotion PR (#1, `gb_testing` →
 
 ```
 D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\ComfyStudio\)
-├── Shared_Assets\                  # Approved, reusable assets (read-only in containers)
+├── Shared_Assets\                  # MODELS ONLY as of 2026-09-04 — live, read-only, shared
 │   ├── checkpoints\                # flat, top-level — some checkpoints live here directly
-│   ├── custom_nodes\               # Vetted nodes only (ComfyUI-Manager, IPAdapter_plus, etc.)
-│   ├── extra_model_paths.yaml      # tells ComfyUI where to find everything below — see note
-│   ├── models\                     # mirrors ComfyUI's own native models/ folder taxonomy
-│   │   ├── checkpoints\ (has its own subfolders, e.g. z-image\)
-│   │   ├── loras\, vae\, controlnet\, text_encoders\, diffusion_models\, model_patches\
-│   │   └── LLM\                    # non-standard — registered by a specific custom node, not base ComfyUI
-│   └── workflows\
+│   ├── extra_model_paths.yaml      # tells ComfyUI where to find everything below — models only now
+│   └── models\                     # mirrors ComfyUI's own native models/ folder taxonomy
+│       ├── checkpoints\ (has its own subfolders, e.g. z-image\)
+│       ├── loras\, vae\, controlnet\, text_encoders\, diffusion_models\, model_patches\
+│       └── LLM\                    # non-standard — registered by a specific custom node, not base ComfyUI
+├── _templates\                     # NEW (2026-09-04) — the curated starting-point collection.
+│   │                                # Copied into each new project at creation (one-time, then
+│   │                                # fully independent); Test-ComfyBuild.ps1 keeps reading it
+│   │                                # LIVE (read-only) since validating it is the sandbox's job.
+│   ├── custom_nodes\               # moved out of Shared_Assets — ComfyUI-Manager, IPAdapter_plus, etc.
+│   └── workflows\                  # moved out of Shared_Assets — known-good starting workflows
 ├── Select-ComfyImage.ps1           # shared helper: read a manifest (via `git show`), list
 │                                    # images, prompt for one, return the digest-pinned image.
 │                                    # The one piece of logic genuinely identical between
@@ -314,7 +318,9 @@ D:\ai\ComfyStudio\                      (future: LucidLink volume, e.g. L:\Comfy
 │                                    # per-run disposable project — always targets the single
 │                                    # fixed _testing\ sandbox below, idempotently.
 ├── _testing\                       # the reusable sandbox Test-ComfyBuild.ps1 manages.
-│   ├── workflows\                  # drop known-good test workflows here to reuse across runs
+│   ├── workflows\                  # your own ad hoc test workflows (shows as "SANDBOX" in the
+│   │                                # browser) — separate from _templates\workflows, which the
+│   │                                # sandbox also mounts live, read-only, as "TEMPLATES"
 │   ├── output\
 │   ├── docker-compose.yml          # always overwritten with whichever image was last selected
 │   └── SANDBOX_STATUS.txt          # not a PROJECT_README — this isn't a client project
@@ -368,14 +374,41 @@ Every real category path needs the `models/` prefix (this is also why some workf
 
 Fixed `extra_model_paths.yaml` to prefix every category with `models/` (keeping `checkpoints` pointing at both the flat folder and `models/checkpoints`, via a multi-line value, so nothing already there stopped working), and added `text_encoders`/`diffusion_models`/`model_patches`. Re-verified working via a manual GPU test run (see Section 8's promotion checklist).
 
+### `/app/ComfyUI/user` ownership — a real bug, found via ComfyUI-Manager failing for real
+
+The first time either script's generated project actually got used through the UI (not just imported), two things failed: saving a setting (`PermissionError` on `comfy.settings.json`) and ComfyUI-Manager itself (`PermissionError` on its own `__manager` directory, then a second `Read-only file system` error trying an alternate path inside `Shared_Assets`).
+
+Root cause: every project/sandbox bind-mounts a host folder into `/app/ComfyUI/user/default/workflows/<X>` — a path *nested inside* ComfyUI's own runtime-managed `user/` directory. That directory isn't part of the image (ComfyUI creates it itself, correctly, as `comfyuser`, the first time it runs) — but Docker has to auto-create the missing parent directories to set up the nested mount, and does so as `root`, before the container's own process ever starts. That pre-empts ComfyUI's own correct self-initialization, leaving `/app/ComfyUI/user` root-owned and blocking `comfyuser` from writing anything else there.
+
+This mount pattern didn't exist in the original pre-git-pivot design (`ComfyStudio_Current_State.md`) at all — it's a feature (shared/project workflow folders showing up in ComfyUI's own workflow browser) added sometime after that doc was written, and it was never actually exercised end-to-end until this pipeline's scripts were tested for real.
+
+**Fix** — the standard pattern for a non-root image that also needs bind mounts: `docker/entrypoint.sh` (new file) starts the container as root just long enough to `chown -R comfyuser:comfyuser /app/ComfyUI/user`, then drops to `comfyuser` via `gosu` (pinned by version + a checksum computed from the downloaded bytes, same trust model as everything else pinned in the Dockerfile) for the actual application process. The Dockerfile's own `USER comfyuser` directive was removed since the entrypoint now handles the drop. Verified the real running process is still `comfyuser`, not root (checked via `ps aux` inside the container — `docker exec whoami` is not reliable evidence here, since removing `USER` means a fresh `docker exec` now defaults to root regardless of what the main process runs as).
+
+**A regression this same fix caused, caught locally before shipping:** once `_templates\` (below) introduced a *read-only* mount also nested under `/app/ComfyUI/user/` (the live `TEMPLATES` workflow view), the entrypoint's `chown -R` failed on that read-only subtree — and because the script uses `set -e`, that failure aborted the entrypoint entirely, crash-looping the container before ComfyUI ever started. Fixed by making that chown tolerate failures (`2>/dev/null || true`): the read-only subtree is *supposed* to stay read-only, so a chown failure there is expected, not something to abort over.
+
+### `_templates\` — custom nodes and workflows moved out of `Shared_Assets`
+
+Real, separate finding while testing the fixes above: with an internet-enabled sandbox, ComfyUI-Manager's own registry update logged `unable to create file: .../ComfyUI-Manager/.git/.cnr-id` for *every* installed node, and WAS Node Suite logged its own `Unable to load conf file`. Both are the same root cause — nodes (and Manager itself) wanting to write small tracking/config files directly into their own installed folder, which conflicts with `Shared_Assets` being deliberately read-only. Neither was fatal (Manager's update still completed), but it's a real, structural limitation, not particular to one node.
+
+This also connects to a separate, already-known issue: any project mounting `Shared_Assets/custom_nodes` (or the old `Shared_Assets/workflows`, which — unlike `Shared_Assets` itself — was **not** mounted read-only) live inherits whatever's currently in the shared pool the moment its container next restarts, with zero per-project control, and one artist saving over a "SHARED" workflow could silently modify it for every other project at once.
+
+**Resolved by moving both into a new `_templates\` collection, copied per-project instead of live-shared:**
+- `Shared_Assets` is models-only now (huge, rarely mutated in place — the original reason it exists at all still holds).
+- `_templates\custom_nodes\` and `_templates\workflows\` hold the curated starting-point collection.
+- `New-ComfyProject.ps1` copies both into the new project's own `custom_nodes\`/`workflows\` at creation — a one-time copy, then fully independent. Updating something in `_templates\` later has no effect on projects already created; a project's own copy is no longer read-only, so ComfyUI-Manager's and WAS Suite's own writes now succeed there.
+- `Test-ComfyBuild.ps1` keeps reading `_templates\` live (read-only) — validating its current state is the whole point, before it becomes what new projects get seeded with. The dropped-workflows-mount write risk doesn't apply to the sandbox since nothing there is meant to persist across template updates anyway.
+- `extra_model_paths.yaml` no longer has a `custom_nodes` key at all — verified via direct mount instead (simpler, and matches the "primary custom_nodes directory" mechanism projects already use for their own project-specific nodes).
+
+Verified end-to-end (real containers, not just static compose review): the sandbox with both new read-only `_templates` mounts starts cleanly and all 5 nodes import from the new location; `New-ComfyProject.ps1`'s copy step actually seeds a real project's folders correctly, and its generated compose no longer references the old shared-workflows mount.
+
 ### Shared vs Project Assets
 
 | Asset type | Location | Who can add |
 |---|---|---|
-| Approved checkpoints | `Shared_Assets/checkpoints/` | Admin only, after vetting |
-| Approved custom nodes | `Shared_Assets/custom_nodes/` | Admin only, after vetting |
+| Approved checkpoints/models | `Shared_Assets/models/` (or flat `Shared_Assets/checkpoints/`) | Admin only, after vetting — live/shared |
+| Approved custom nodes, starting workflows | `_templates/custom_nodes/`, `_templates/workflows/` | Admin only, after vetting — copied per-project at creation, not live |
 | Client-specific models | `Projects/[name]/models/` | Artist, scoped to that project |
-| Unvetted test nodes | `Projects/[name]/custom_nodes/` | Artist, isolated to that project |
+| A project's own nodes/workflows (post-copy) | `Projects/[name]/custom_nodes/`, `Projects/[name]/workflows/` | Artist, fully independent per project once created |
 | Client deliverables | `Projects/[name]/output/` | Written by ComfyUI container |
 
 ---
@@ -735,12 +768,7 @@ Was flagged as an open architectural decision: bake known shared-node deps into 
 - `restore_project.ps1` — `docker load`s the archived image and recreates the environment from the captured config.
 - Guiding principle either script should honor: build once → test → tag → use → **archive the exact image**, never "we can rebuild it identically from git later" (dependency drift, base-image changes, and disappearing upstream packages all make a rebuild non-identical).
 
-**Per-project custom node localization (copy, not live-mount, for real projects).** Right now any project mounting `Shared_Assets/custom_nodes` live (via `extra_model_paths.yaml`) inherits whatever's currently in the shared pool the moment its container next restarts — no per-project control, no opt-in. Models and custom nodes should be treated asymmetrically here, not the same way:
-- **Models stay shared/live, unchanged** — too large to duplicate (the original 20GB+-per-checkpoint concern), and in practice closer to immutable/versioned files, not actively-patched code.
-- **Custom nodes should get copied into each project's own `custom_nodes/` folder at creation time** instead of referenced live — small enough that duplication is cheap, and unlike models, actively developed with real potential for breaking changes landing on a live project with zero warning.
-- This is the same "pin at creation, no silent updates, deliberate opt-in to update" principle already applied to the ComfyUI image itself (locked by digest, no automated update path) — not a new philosophy, an extension of one already committed to.
-- `Test-ComfyBuild.ps1` should keep reading nodes live from `Shared_Assets` — that's its actual job, validating current shared-pool state before something gets "graduated" into new projects. Only real projects (`New-ComfyProject.ps1`) need the copy-at-creation behavior.
-- Practical implication when built: `New-ComfyProject.ps1` needs a new step to copy the current state of each approved `Shared_Assets/custom_nodes/*` folder into the new project's own `custom_nodes/` at creation time, and the live `extra_model_paths.yaml` custom-node mapping should probably be dropped for real projects at that point (keeping both risks ComfyUI double-loading the same node from two paths).
+**~~Per-project custom node localization~~ — DONE (2026-09-04).** See "`_templates\` — custom nodes and workflows moved out of `Shared_Assets`" earlier in this section for the full implementation. Turned out to extend naturally to workflows too, not just custom nodes.
 
 **Client-specific LoRA / training folder structure.** `New-ComfyProject.ps1` currently creates `models/loras` per project, not a distinct `loras/trained` — and has no `training/` folder at all. The original design called for:
 ```
