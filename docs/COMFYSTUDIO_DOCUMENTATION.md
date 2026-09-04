@@ -759,6 +759,11 @@ Confirmed via direct inspection rather than assumption: 4 of the 5 nodes were ac
 
 This likely affects any project ever created via `New-ComfyProject.ps1` too (same `_templates\` source, same copy mechanism) — not yet checked or fixed there since no real client project exists yet; worth re-checking if a real project ever reports the same "Manager update does nothing" symptom.
 
+### Resolved (2026-09-04) — git "dubious ownership" also blocked node updates, same session
+After the CRLF fix above, updates still didn't stick. Real second cause: modern git refuses to operate on a repository whose directory is owned by a different user than the one running the command ("detected dubious ownership") — Docker Desktop for Windows doesn't preserve a real POSIX owner across bind-mounted `custom_nodes` folders, so this trips on literally the first git operation ComfyUI-Manager runs against any node. ComfyUI-Manager does self-heal this (auto-adds a `safe.directory` exception after a failed attempt), but only reactively, one node at a time — not something a future project should have to hit by trial and error.
+
+**Fixed properly in `docker/entrypoint.sh`:** added `git config --system --add safe.directory '*'`, run as root before dropping to `comfyuser` — trusts every directory for every user, globally, at every container start. Same root-cause family as the earlier `/app/ComfyUI/user` ownership bug (a Windows bind-mount ownership mismatch inside the container) — these two fixes are companions, not substitutes. Shipped through the real pipeline (`master` → `gb_testing` → CI build).
+
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
