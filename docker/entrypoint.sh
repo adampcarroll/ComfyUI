@@ -23,4 +23,17 @@ set -e
 # chown would silently prevent ComfyUI from ever starting at all).
 chown -R comfyuser:comfyuser /app/ComfyUI/user 2>/dev/null || true
 
+# Git refuses to operate on a repository whose directory is owned by a
+# different user than the one running the command ("detected dubious
+# ownership") - a safety check that has nothing to do with our actual trust
+# model here, but trips constantly on Windows bind-mounted custom_nodes\
+# folders (Docker Desktop for Windows doesn't preserve a real POSIX owner
+# across the bind mount, so it can show up as anyone). Without this,
+# ComfyUI-Manager's own node updates fail on literally the first git
+# operation for every custom node folder, though Manager itself silently
+# self-heals it one repo at a time (adding its own safe.directory exception
+# only after a failed attempt) - trusting every directory up front avoids
+# ever hitting that failure at all, for any current or future custom node.
+git config --system --add safe.directory '*'
+
 exec gosu comfyuser python3.11 main.py --listen 0.0.0.0 $CLI_ARGS
