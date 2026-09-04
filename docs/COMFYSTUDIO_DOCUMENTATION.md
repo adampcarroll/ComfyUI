@@ -752,6 +752,13 @@ One side effect worth knowing about, not yet a problem: the merge also pulled in
 
 `gb_stable` was deliberately **not** touched by this sync — it still only has the original single promotion from 2026-09-02, now even further behind. Consistent with the "get testing rock solid, then one consolidated promotion" plan below.
 
+### Resolved (2026-09-04) — CRLF corruption silently blocked ComfyUI-Manager node updates
+Found while investigating why ComfyUI-Manager's "Update" button on a custom node appeared to succeed but never actually changed anything, forever re-flagging "needs update" after every restart. Root cause: every node in `_templates\custom_nodes\` had `core.autocrlf=true` and CRLF physically baked into its working-tree files — invisible from Windows git-bash (which normalizes CRLF↔LF transparently for its own `git status`/`git diff`), but the Linux container's git does not apply that same normalization, so it saw every affected line as an uncommitted local change and refused to `git pull` at all (`Your local changes ... would be overwritten by merge`).
+
+Confirmed via direct inspection rather than assumption: 4 of the 5 nodes were actually already at their latest upstream commit (git itself was fine) — only `rgthree-comfy` had real pending upstream commits (16 behind), and this bug was specifically what blocked pulling them. Fixed in both `_templates\custom_nodes\` (the master collection) and the already-seeded `_testing\custom_nodes\` sandbox copy: disabled `core.autocrlf` and force-reset each repo to a clean LF checkout matching its actual committed content. Verified: `rgthree-comfy` then fast-forwarded cleanly via a real `git pull`; its `requirements.txt` was empty before and after, so no Python dependency change and no image rebuild was needed for this particular update.
+
+This likely affects any project ever created via `New-ComfyProject.ps1` too (same `_templates\` source, same copy mechanism) — not yet checked or fixed there since no real client project exists yet; worth re-checking if a real project ever reports the same "Manager update does nothing" symptom.
+
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
