@@ -66,7 +66,7 @@ master              ← this fork's default branch. Holds Dockerfile,
 
 `gb_testing` and `gb_stable` are **siblings**, not parent/child — both branch off `master`, and `gb_stable` is a permanent branch that periodically receives a PR merge from `gb_testing`, not something re-created from it each time.
 
-**Current reality check (2026-09-02):** `gb_stable` is badly out of sync — its latest commit (`a1c101f8`) is far behind `master`/`gb_testing` and shares no recent history with them. Nothing has ever been promoted through this pipeline. This is expected at this stage and not itself a bug — see Section 10.
+**Current reality check (2026-09-04):** `master` and `gb_testing` were fully synced with `upstream/master` this session (695 commits, zero conflicts — see Section 10). `gb_stable` was **not** included in that sync and has received exactly one promotion ever (tag `stable-b9e4efb`, back on 2026-09-02) — it now predates both the upstream sync and every studio-side fix made since. This is intentional, not a bug: the plan is to get `gb_testing` "rock solid" and then do one consolidated promotion covering everything at once, rather than promoting piecemeal. See Section 10.
 
 ---
 
@@ -739,6 +739,15 @@ Was flagged as an open architectural decision: bake known shared-node deps into 
 - ~~Air-gapped mode is completely broken (unreachable, not just isolated)~~ — root-caused and fixed with the sidecar-proxy architecture; see "Air-gapped mode — how it actually works" above. Verified end-to-end against the real ComfyUI image.
 - ~~Network block placed inside the service instead of top-level~~ — a real Compose-YAML validation error, fixed in both scripts (`services.X.networks.default additional properties 'internal' not allowed`)
 - Port-detection regex only matched `0.0.0.0:` bindings — the air-gapped proxy binds to `127.0.0.1:` specifically, so `Get-NextAvailablePort` would have missed it. Fixed to match any host IP prefix.
+
+### Resolved (2026-09-04) — upstream ComfyUI sync
+`master` and `gb_stable` had drifted 693/695 commits behind `upstream/master` (`gb_testing` was equally stale). Synced via `git fetch upstream && git merge upstream/master` into `master` — 695 commits, zero conflicts. `docker/requirements.lock` regenerated against the updated `requirements.txt` (frontend/workflow-templates/embedded-docs version bumps; `av`/`comfy-kitchen`/`comfy-aimdo` bumps; `glfw` replaced entirely by `comfy-angle`).
+
+Verified locally before shipping: image built clean, all 5 `_templates/custom_nodes` still import successfully, three new alembic migrations (`0004_drop_tag_type`, `0005_allow_case_sensitive_tags`, `0006_add_loader_path`) applied without error against a real full-mount-set container launch, reached `Starting server` with no new errors. Shipped through the real pipeline: pushed `master` → merged into `gb_testing` → pushed → CI build succeeded (tag `82dc184`).
+
+One side effect worth knowing about, not yet a problem: the merge also pulled in several of upstream's own repo-level CI workflow files (`cla.yml`, `notify-on-merge.yml`, `backport_release.yaml`, `detect-unreviewed-merge.yml`, `ci-cursor-review.yml`). None fired on the sync push itself (they're gated to other events — PR-opened, release, etc.), but they likely assume upstream-only secrets/bot accounts and could fail loudly if one of those events ever happens on this fork. Not addressed yet.
+
+`gb_stable` was deliberately **not** touched by this sync — it still only has the original single promotion from 2026-09-02, now even further behind. Consistent with the "get testing rock solid, then one consolidated promotion" plan below.
 
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
