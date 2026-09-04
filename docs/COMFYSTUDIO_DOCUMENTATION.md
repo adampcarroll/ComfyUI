@@ -396,10 +396,13 @@ This also connects to a separate, already-known issue: any project mounting `Sha
 - `Shared_Assets` is models-only now (huge, rarely mutated in place — the original reason it exists at all still holds).
 - `_templates\custom_nodes\` and `_templates\workflows\` hold the curated starting-point collection.
 - `New-ComfyProject.ps1` copies both into the new project's own `custom_nodes\`/`workflows\` at creation — a one-time copy, then fully independent. Updating something in `_templates\` later has no effect on projects already created; a project's own copy is no longer read-only, so ComfyUI-Manager's and WAS Suite's own writes now succeed there.
-- `Test-ComfyBuild.ps1` keeps reading `_templates\` live (read-only) — validating its current state is the whole point, before it becomes what new projects get seeded with. The dropped-workflows-mount write risk doesn't apply to the sandbox since nothing there is meant to persist across template updates anyway.
+- `Test-ComfyBuild.ps1`'s **workflows** stay live-mounted read-only from `_templates\` as a browse-only "TEMPLATES" view, plus its own separate writable "SANDBOX" folder for authoring/testing new ones — the dropped-workflows-mount write risk doesn't apply here since nothing in the sandbox is meant to persist across template updates anyway.
+- `Test-ComfyBuild.ps1`'s **custom_nodes**, however, get the same one-time-seed-copy treatment as a real project (`_testing\custom_nodes\`, seeded from `_templates\custom_nodes\` the first time the sandbox is created, then left alone on later runs) — **not** a live mount, and updated 2026-09-04 for exactly this reason: a live mount can only ever be read-only from the container's point of view, so ComfyUI-Manager's update/install feature would fail on it. With a local writable copy, an admin can update nodes through Manager right in the sandbox, verify they still import cleanly, then **manually copy `_testing\custom_nodes\` back over `_templates\custom_nodes\`** to promote the result as the new starting point for future projects — a deliberate manual gate, same spirit as every other promotion step in this pipeline, not something that happens automatically. If `_testing\custom_nodes\` already exists it won't silently re-sync to whatever `_templates\` currently has — delete it first for a fresh seed.
 - `extra_model_paths.yaml` no longer has a `custom_nodes` key at all — verified via direct mount instead (simpler, and matches the "primary custom_nodes directory" mechanism projects already use for their own project-specific nodes).
 
-Verified end-to-end (real containers, not just static compose review): the sandbox with both new read-only `_templates` mounts starts cleanly and all 5 nodes import from the new location; `New-ComfyProject.ps1`'s copy step actually seeds a real project's folders correctly, and its generated compose no longer references the old shared-workflows mount.
+Verified end-to-end (real containers, not just static compose review): the sandbox starts cleanly and all 5 nodes import from the new location; `New-ComfyProject.ps1`'s copy step actually seeds a real project's folders correctly, and its generated compose no longer references the old shared-workflows mount.
+
+Also added the same session: `input/` folder + mount for the sandbox (matching real projects — needed for any test workflow that takes a reference/source image, e.g. IPAdapter/SAM/img2img), which the sandbox had been missing entirely.
 
 ### Shared vs Project Assets
 
@@ -749,6 +752,13 @@ One side effect worth knowing about, not yet a problem: the merge also pulled in
 
 `gb_stable` was deliberately **not** touched by this sync — it still only has the original single promotion from 2026-09-02, now even further behind. Consistent with the "get testing rock solid, then one consolidated promotion" plan below.
 
+### Resolved (2026-09-04) — CRLF corruption silently blocked ComfyUI-Manager node updates
+Found while investigating why ComfyUI-Manager's "Update" button on a custom node appeared to succeed but never actually changed anything, forever re-flagging "needs update" after every restart. Root cause: every node in `_templates\custom_nodes\` had `core.autocrlf=true` and CRLF physically baked into its working-tree files — invisible from Windows git-bash (which normalizes CRLF↔LF transparently for its own `git status`/`git diff`), but the Linux container's git does not apply that same normalization, so it saw every affected line as an uncommitted local change and refused to `git pull` at all (`Your local changes ... would be overwritten by merge`).
+
+Confirmed via direct inspection rather than assumption: 4 of the 5 nodes were actually already at their latest upstream commit (git itself was fine) — only `rgthree-comfy` had real pending upstream commits (16 behind), and this bug was specifically what blocked pulling them. Fixed in both `_templates\custom_nodes\` (the master collection) and the already-seeded `_testing\custom_nodes\` sandbox copy: disabled `core.autocrlf` and force-reset each repo to a clean LF checkout matching its actual committed content. Verified: `rgthree-comfy` then fast-forwarded cleanly via a real `git pull`; its `requirements.txt` was empty before and after, so no Python dependency change and no image rebuild was needed for this particular update.
+
+This likely affects any project ever created via `New-ComfyProject.ps1` too (same `_templates\` source, same copy mechanism) — not yet checked or fixed there since no real client project exists yet; worth re-checking if a real project ever reports the same "Manager update does nothing" symptom.
+
 ### Soon — still open
 - [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
 - [ ] Add CPU/RAM resource limits to the compose template
@@ -792,6 +802,14 @@ One side effect worth knowing about, not yet a problem: the merge also pulled in
 Rationale: a client's trained LoRA and the training data behind it should stay project-scoped (never in `Shared_Assets`) and travel together into that project's archive — a future client shouldn't be able to see another client's training images or LoRAs.
 
 **Multi-provider / API-based generation.** The studio wants the ability to use external API-based image/video generation (e.g. Google's models, "Nano Banana") *alongside* local checkpoints, without redesigning the pipeline around any one provider. Implies: architecture should stay provider-agnostic (not build anything that assumes "every generation is a local model"), and API credentials need real secrets handling — ties directly into the still-open `keys/` folder → Docker secrets item above, since API keys can't be plaintext files in a project folder.
+
+**AYON integration.** The studio uses AYON for pipeline/production tracking and wants ComfyUI projects to hook into it (per [AYON's ComfyUI setup guide](https://help.ayon.app/articles/6794401-ayon-comfyui-setup-guide), reviewed 2026-09-04). Maps onto this architecture more cleanly than most integrations would:
+- AYON's "remote profile" mode is exactly this project's shape already — AYON just connects to an already-running ComfyUI server by URL, which is what every project container is (no need for AYON's "local profile" / venv-management path at all, since ComfyStudio never lets AYON launch ComfyUI itself).
+- The only thing a container needs is AYON's `ayon_menu` plugin (from `ayon-comfyui/client/_comfyui_plugin/ayon_menu`) dropped into `custom_nodes/` — a normal custom node, so it slots directly into the existing `_templates\custom_nodes\` mechanism (copied into every new project at creation, no architecture change needed there).
+- **Wrinkle 1 — a second port.** `ayon_menu` runs its own heartbeat port (default `55055`, configurable in `ayon_menu/consts.py`) alongside ComfyUI's own port. `New-ComfyProject.ps1`'s port allocation currently only reserves/tracks one port per project — would need to reserve and publish a pair per project instead.
+- **Wrinkle 2 — air-gap interacts badly with AYON's own network needs.** AYON's plugin talks outbound to the studio's AYON server for pipeline data, but this project's air-gapped mode is all-or-nothing (the sidecar proxy blocks *everything* outbound). If the AYON server lives on the local studio network rather than the public internet, air-gapped projects would need to allow that one host through while still blocking the internet — a step up from the current binary internal/plain toggle.
+
+Neither wrinkle is a blocker, both are known shapes of problem to solve when this gets built, not now.
 
 ---
 
