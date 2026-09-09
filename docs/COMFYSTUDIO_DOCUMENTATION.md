@@ -766,9 +766,33 @@ After the CRLF fix above, updates still didn't stick. Real second cause: modern 
 
 One more layer surfaced after both fixes landed: the Custom Nodes Manager panel still showed "version: unknown, try update" for every node. This turned out to be neither bug recurring — it's Manager's own classification for any node installed by cloning a project's default branch rather than through its CNR/tagged-release install flow (internally `'nightly'`, rendered as a blank "unknown" in the simpler UI). Confirmed via Manager's own live API (`/customnode/getlist`) that several completely unrelated, never-installed registry packages show the identical `nightly` state for the same reason (their upstream doesn't publish tagged releases) — proof this is generic, expected behavior, not specific to our pipeline. It resolved further on its own once Manager's async ComfyRegistry cache finished warming up, then showing richer labels like "Nightly 3.0.1" — no code change needed for that part.
 
+### Resolved (2026-09-09) — small maintenance items found during real workflow testing
+While testing newly-downloaded template models in the sandbox: `Shared_Assets/extra_model_paths.yaml` was missing an `LLM:` category — a real downloaded model (`Qwen3-VL-2B-Instruct`) was sitting on disk but invisible to ComfyUI. Added `LLM: models/LLM`; confirmed active in a fresh container's startup log (`Adding extra search path LLM /shared_assets/models/LLM`). Also promoted `_templates\custom_nodes\ComfyUI-Manager` to match the commit actually verified in the sandbox (the only one of the 5 nodes that had drifted since the last promotion, from real in-app Manager updates) — checked all 5 by exact commit hash before promoting, not assumed.
+
+### Resolved (2026-09-09) — container hardening: security_opt / cap_drop / resource limits
+Added to the ComfyUI service in both `New-ComfyProject.ps1` and `Test-ComfyBuild.ps1` (all four compose blocks — air-gapped and plain, in each script):
+```yaml
+security_opt:
+  - no-new-privileges:true
+cap_drop:
+  - ALL
+cap_add:
+  - CHOWN
+  - SETUID
+  - SETGID
+deploy:
+  resources:
+    limits:
+      cpus: '16'
+      memory: 32G
+```
+`CHOWN`/`SETUID`/`SETGID` are the exact three capabilities the entrypoint's privilege-drop sequence needs (the `chown` on `/app/ComfyUI/user`, then `gosu` dropping root → `comfyuser`) — everything else a default container gets (raw networking, kernel module loading, etc.) is now unavailable to any code running inside, custom nodes included. The 16 CPU / 32GB limits exist because multiple projects run side-by-side on one host — without a cap, one runaway workflow could starve every other project's container.
+
+Verified thoroughly before considering this done, not just applied: an isolated capability-restricted test container confirmed the entrypoint's `chown`+`gosu` sequence still works (`ps aux` inside showed the main process running as `comfyuser`, not root); then the real sandbox was regenerated and relaunched with actual mounts and all 5 real custom nodes — reached `Starting server` with zero permission/capability errors, and `docker inspect` confirmed the restrictions were genuinely applied (`CapDrop: [ALL]`, `CapAdd: [CAP_CHOWN CAP_SETGID CAP_SETUID]`, `Memory: 34359738368`, `NanoCpus: 16000000000`), not silently ignored.
+
+Deliberately not pursued: `read_only: true` (locking the whole root filesystem except explicit writable mounts) — ComfyUI and its custom nodes write to enough of their own install directory (`user/`, caches, `__pycache__`) that mapping this out would take real effort for security benefit largely already covered by the capability drop.
+
 ### Soon — still open
-- [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
-- [ ] Add CPU/RAM resource limits to the compose template
 - [ ] Add `keys/` folder handling — project API keys should use Docker secrets or env var injection, not plaintext files
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
 - [ ] Design (not yet built): a controlled way to update a locked project's image mid-job, since right now that means a manual `docker-compose.yml` edit with no tooling support
