@@ -764,9 +764,34 @@ After the CRLF fix above, updates still didn't stick. Real second cause: modern 
 
 **Fixed properly in `docker/entrypoint.sh`:** added `git config --system --add safe.directory '*'`, run as root before dropping to `comfyuser` — trusts every directory for every user, globally, at every container start. Same root-cause family as the earlier `/app/ComfyUI/user` ownership bug (a Windows bind-mount ownership mismatch inside the container) — these two fixes are companions, not substitutes. Shipped through the real pipeline (`master` → `gb_testing` → CI build).
 
+One more layer surfaced after both fixes landed: the Custom Nodes Manager panel still showed "version: unknown, try update" for every node. This turned out to be neither bug recurring — it's Manager's own classification for any node installed by cloning a project's default branch rather than through its CNR/tagged-release install flow (internally `'nightly'`, rendered as a blank "unknown" in the simpler UI). Confirmed via Manager's own live API (`/customnode/getlist`) that several completely unrelated, never-installed registry packages show the identical `nightly` state for the same reason (their upstream doesn't publish tagged releases) — proof this is generic, expected behavior, not specific to our pipeline. It resolved further on its own once Manager's async ComfyRegistry cache finished warming up, then showing richer labels like "Nightly 3.0.1" — no code change needed for that part.
+
+### Resolved (2026-09-09) — small maintenance items found during real workflow testing
+While testing newly-downloaded template models in the sandbox: `Shared_Assets/extra_model_paths.yaml` was missing an `LLM:` category — a real downloaded model (`Qwen3-VL-2B-Instruct`) was sitting on disk but invisible to ComfyUI. Added `LLM: models/LLM`; confirmed active in a fresh container's startup log (`Adding extra search path LLM /shared_assets/models/LLM`). Also promoted `_templates\custom_nodes\ComfyUI-Manager` to match the commit actually verified in the sandbox (the only one of the 5 nodes that had drifted since the last promotion, from real in-app Manager updates) — checked all 5 by exact commit hash before promoting, not assumed.
+
+### Resolved (2026-09-09) — container hardening: security_opt / cap_drop (resource limits deliberately NOT included)
+Added to the ComfyUI service in both `New-ComfyProject.ps1` and `Test-ComfyBuild.ps1` (all four compose blocks — air-gapped and plain, in each script):
+```yaml
+security_opt:
+  - no-new-privileges:true
+cap_drop:
+  - ALL
+cap_add:
+  - CHOWN
+  - SETUID
+  - SETGID
+```
+`CHOWN`/`SETUID`/`SETGID` are the exact three capabilities the entrypoint's privilege-drop sequence needs (the `chown` on `/app/ComfyUI/user`, then `gosu` dropping root → `comfyuser`) — everything else a default container gets (raw networking, kernel module loading, etc.) is now unavailable to any code running inside, custom nodes included, regardless of the machine it runs on.
+
+Verified thoroughly before considering this done, not just applied: an isolated capability-restricted test container confirmed the entrypoint's `chown`+`gosu` sequence still works (`ps aux` inside showed the main process running as `comfyuser`, not root); then the real sandbox was regenerated and relaunched with actual mounts and all 5 real custom nodes — reached `Starting server` with zero permission/capability errors, and `docker inspect` confirmed the restrictions were genuinely applied (`CapDrop: [ALL]`, `CapAdd: [CAP_CHOWN CAP_SETGID CAP_SETUID]`), not silently ignored.
+
+**CPU/memory `limits:` were tried (16 CPU / 32G, then revised to 48G), then deliberately removed the same day.** The idea was to stop one runaway project from starving another on the same host — but a hardcoded absolute number doesn't travel: the same script running on a leaner machine would set a limit the container could never actually reach cleanly (real host/WSL2 pressure hits first), and on a much bigger machine it would cap a container needlessly below what's actually available. Investigated rather than guessed: confirmed via `docker info` that Docker Desktop for Windows runs inside a WSL2 VM with its own memory ceiling, separate from physical RAM (this machine has 125.6GB physical, no `.wslconfig`, so WSL2 defaults to roughly half of that, ~61.6GB) — that ceiling already protects **Windows itself** from Docker as a whole, which is the actual worst-case being guarded against; it just doesn't protect one container from another *inside* that shared budget. Since there's no concurrent-multi-project usage happening yet, decided the guessed-number problem (which already caused one real near-miss: the sandbox sat at 85% of the first 32G guess from ordinary use) wasn't worth taking on for a risk that isn't materializing. If concurrent projects becomes real, revisit with a limit computed from `docker info`'s actual reported total (already accounts for the WSL2 layer) divided by an explicit "how many projects do we expect concurrently" assumption, rather than another hardcoded guess.
+
+GPU VRAM was never affected by any of this either way — confirmed via `nvidia-smi` from inside the container showing the full card throughout. Our `memory:` limit (when it existed) was a Linux cgroup (system RAM) limit; VRAM is an entirely separate system that neither Docker Compose nor the NVIDIA container runtime caps this way (outside enterprise MIG-partitioned datacenter cards, not applicable here).
+
+Deliberately not pursued: `read_only: true` (locking the whole root filesystem except explicit writable mounts) — ComfyUI and its custom nodes write to enough of their own install directory (`user/`, caches, `__pycache__`) that mapping this out would take real effort for security benefit largely already covered by the capability drop.
+
 ### Soon — still open
-- [ ] Add `security_opt`/`cap_drop`/resource limits to the compose generation in both scripts
-- [ ] Add CPU/RAM resource limits to the compose template
 - [ ] Add `keys/` folder handling — project API keys should use Docker secrets or env var injection, not plaintext files
 - [ ] Mount `input/` as read-only inside containers where workflows allow it
 - [ ] Design (not yet built): a controlled way to update a locked project's image mid-job, since right now that means a manual `docker-compose.yml` edit with no tooling support
@@ -791,6 +816,7 @@ After the CRLF fix above, updates still didn't stick. Real second cause: modern 
 - `archive_project.ps1` — stops the project, exports its exact image (`docker save`) to a `.tar`, captures `docker-compose.yml` + `extra_model_paths.yaml`, preserves project-specific custom nodes / trained LoRAs / training assets, snapshots whichever shared **models** the project actually depends on **and whichever shared `custom_nodes/*` folders it actually uses** (so restore doesn't depend on the current state of `Shared_Assets` for either — code or models), and writes metadata (project, date, image tag/digest, ComfyUI commit, model/node dependencies).
 - `restore_project.ps1` — `docker load`s the archived image and recreates the environment from the captured config.
 - Guiding principle either script should honor: build once → test → tag → use → **archive the exact image**, never "we can rebuild it identically from git later" (dependency drift, base-image changes, and disappearing upstream packages all make a rebuild non-identical).
+- **Supplemental idea, flagged 2026-09-06, not the primary mechanism:** ComfyUI-Manager has a built-in "Snapshots" feature (`glob/manager_core.py`'s `get_current_snapshot`/`restore_snapshot`) that writes a JSON manifest of the ComfyUI core commit hash, each custom node's git URL+commit (or CNR id+version), and installed pip packages. It's a cheap, human-readable *audit record* of exact versions at a point in time — worth capturing alongside `archive_project.ps1`'s real archive as a quick reference file, since it costs nothing to generate. It is **not** a substitute for the `docker save` archive itself: restore works by re-fetching those same commits from their git URLs later, which can silently fail or diverge if a repo is deleted, rebased, or force-pushed — weaker than the hash-verified, baked-in image we already build. It also captures nothing about models, workflows, or project data.
 
 **~~Per-project custom node localization~~ — DONE (2026-09-04).** See "`_templates\` — custom nodes and workflows moved out of `Shared_Assets`" earlier in this section for the full implementation. Turned out to extend naturally to workflows too, not just custom nodes.
 

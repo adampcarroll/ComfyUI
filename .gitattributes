@@ -1,4 +1,5 @@
 docker/*.sh text eol=lf
+docker/*.toml text eol=lf
 /web/assets/** linguist-generated
 /web/** linguist-vendored
 comfy_api_nodes/apis/__init__.py linguist-generated
