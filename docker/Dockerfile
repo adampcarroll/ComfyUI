@@ -68,6 +68,22 @@ RUN python3.11 -m pip install --require-hashes -r requirements.lock
 # with the comfyuser process - the root moment is only ever a chown).
 RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
 
+# Redirect ComfyUI-Manager's own runtime `uv pip install` calls (e.g.
+# installing a NEW custom node's dependencies via its UI) to comfyuser's
+# already-writable Python user-site directory instead of the root-owned
+# system site-packages - Python auto-discovers this exact path via
+# site.ENABLE_USER_SITE, so nothing installed here needs any extra
+# PYTHONPATH wiring to become importable. Deliberately NOT making system
+# site-packages itself writable: this keeps every already-vetted baked-in
+# package (torch, numpy, everything in requirements.lock) immutable, so a
+# bad runtime install can only ever add new packages, never overwrite a
+# trusted one. Manager's own install code never passes --user itself (and
+# patching Manager's source directly isn't sustainable - it overwrites
+# itself on its next self-update), so this has to work via uv's own config
+# file discovery (UV_CONFIG_FILE) rather than a CLI flag.
+COPY --chown=comfyuser:comfyuser docker/uv.toml /home/comfyuser/.config/uv/uv.toml
+ENV UV_CONFIG_FILE=/home/comfyuser/.config/uv/uv.toml
+
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
