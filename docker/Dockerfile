@@ -66,23 +66,25 @@ RUN python3.11 -m pip install --require-hashes -r requirements.lock
 # dropping to comfyuser. See docker/entrypoint.sh for why this is needed and
 # why it doesn't weaken the non-root security posture (gosu replaces itself
 # with the comfyuser process - the root moment is only ever a chown).
-RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app
-
-# Redirect ComfyUI-Manager's own runtime `uv pip install` calls (e.g.
-# installing a NEW custom node's dependencies via its UI) to comfyuser's
-# already-writable Python user-site directory instead of the root-owned
-# system site-packages - Python auto-discovers this exact path via
-# site.ENABLE_USER_SITE, so nothing installed here needs any extra
-# PYTHONPATH wiring to become importable. Deliberately NOT making system
-# site-packages itself writable: this keeps every already-vetted baked-in
-# package (torch, numpy, everything in requirements.lock) immutable, so a
-# bad runtime install can only ever add new packages, never overwrite a
-# trusted one. Manager's own install code never passes --user itself (and
-# patching Manager's source directly isn't sustainable - it overwrites
-# itself on its next self-update), so this has to work via uv's own config
-# file discovery (UV_CONFIG_FILE) rather than a CLI flag.
-COPY --chown=comfyuser:comfyuser docker/uv.toml /home/comfyuser/.config/uv/uv.toml
-ENV UV_CONFIG_FILE=/home/comfyuser/.config/uv/uv.toml
+#
+# site-packages is included here deliberately, not left root-owned: without
+# this, ComfyUI-Manager's own runtime `uv pip install` (e.g. installing a
+# NEW custom node's dependencies via its UI) fails outright with Permission
+# denied on any package not already baked into requirements.lock. A prior
+# attempt redirected these installs to a separate comfyuser-owned user-site
+# directory instead (keeping system site-packages untouched) - that made
+# things WORSE, not better: uv's --target/config-file redirect doesn't
+# check what the surrounding environment already satisfies, so it silently
+# pulled in its OWN duplicate copies of already-pinned packages (numpy
+# 2.4.5->2.4.6, Pillow 12.2.0->12.3.0 were both observed) at versions we
+# never tested, and Python's user-site precedence meant those unvetted
+# duplicates silently overrode the pinned ones for the WHOLE process, not
+# just the new node - worse than a plain in-place upgrade would have been.
+# A normal `uv pip install -U` directly against a writable site-packages
+# correctly recognizes an already-installed package and upgrades it in
+# place instead of creating a shadow copy - one canonical version on disk,
+# same trade-off every other ComfyUI install in the wild already accepts.
+RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app /usr/local/lib/python3.11/site-packages
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
