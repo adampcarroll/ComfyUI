@@ -21,7 +21,11 @@ set -e
 # shared templates collection) - chown can't touch that, and must not abort
 # the whole script over it (this script has `set -e`, so a plain failing
 # chown would silently prevent ComfyUI from ever starting at all).
-chown -R comfyuser:comfyuser /app/ComfyUI/user 2>/dev/null || true
+#
+# Everything run as root here uses an absolute path: /usr/local/bin is
+# comfyuser-writable (see Dockerfile), so a bare `chown` could resolve to a
+# script a custom node dropped there, run as root on the next start.
+/bin/chown -R comfyuser:comfyuser /app/ComfyUI/user 2>/dev/null || true
 
 # Git refuses to operate on a repository whose directory is owned by a
 # different user than the one running the command ("detected dubious
@@ -34,6 +38,6 @@ chown -R comfyuser:comfyuser /app/ComfyUI/user 2>/dev/null || true
 # self-heals it one repo at a time (adding its own safe.directory exception
 # only after a failed attempt) - trusting every directory up front avoids
 # ever hitting that failure at all, for any current or future custom node.
-git config --system --add safe.directory '*'
+/usr/bin/git config --system --add safe.directory '*'
 
-exec gosu comfyuser python3.11 main.py --listen 0.0.0.0 $CLI_ARGS
+exec /usr/local/bin/gosu comfyuser /usr/local/bin/python3.11 main.py --listen 0.0.0.0 $CLI_ARGS
