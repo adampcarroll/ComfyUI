@@ -84,7 +84,17 @@ RUN python3.11 -m pip install --require-hashes -r requirements.lock
 # correctly recognizes an already-installed package and upgrades it in
 # place instead of creating a shadow copy - one canonical version on disk,
 # same trade-off every other ComfyUI install in the wild already accepts.
-RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app /usr/local/lib/python3.11/site-packages
+#
+# /usr/local/bin has to be comfyuser-writable too: uv removes a package's old
+# files before installing the new version and doesn't roll back on failure,
+# so a root-owned console script (e.g. huggingface_hub's `hf`) made it abort
+# halfway through an upgrade, leaving safetensors/click/hf_xet uninstalled and
+# ComfyUI unable to start. The sticky bit keeps comfyuser from deleting or
+# replacing the root-owned files here (gosu, the CPython binaries) - only the
+# pip-installed entry-point scripts are handed over.
+RUN useradd -m -u 1000 comfyuser && chown -R comfyuser /app /usr/local/lib/python3.11/site-packages \
+    && find /usr/local/bin -type f ! -name 'python*' ! -name 'pydoc*' ! -name 'idle*' ! -name '2to3*' ! -name gosu -exec chown comfyuser {} + \
+    && chgrp comfyuser /usr/local/bin && chmod 1775 /usr/local/bin
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
